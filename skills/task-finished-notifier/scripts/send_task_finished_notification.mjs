@@ -1,5 +1,5 @@
 ﻿import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { HttpWeixinClient } from '../../../dist/src/weixin/weixin-api-client.js';
 import { AppServerClient } from '../../../dist/src/codex/app-server-client.js';
@@ -10,6 +10,8 @@ const __dirname = path.dirname(__filename);
 const pluginRoot = path.resolve(__dirname, '..', '..', '..');
 const defaultStateDb = path.join(pluginRoot, 'state', 'bridge.sqlite');
 const defaultAppServerUrl = process.env.CODEX_APP_SERVER_URL?.trim() || 'ws://127.0.0.1:4500';
+const currentScriptUrl = import.meta.url;
+const invokedScriptUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
 
 function parseArgs(argv) {
   const options = {
@@ -105,6 +107,21 @@ function resolveContextToken(db, accountId, peerUserId) {
   return row.context_token;
 }
 
+export function resolveSourceSessionId(options, conversation, env = process.env) {
+  const explicitSessionId = options.sessionId?.trim();
+  if (explicitSessionId) {
+    return explicitSessionId;
+  }
+  if (options.useBridgeSession) {
+    return conversation.runner_thread_id || 'unknown';
+  }
+  const currentCodexThreadId = env.CODEX_THREAD_ID?.trim();
+  if (currentCodexThreadId) {
+    return currentCodexThreadId;
+  }
+  return 'unknown';
+}
+
 async function resolveSessionName(options) {
   if (!options.sessionId || options.sessionId === 'unknown') {
     return options.sessionName?.trim() || 'unknown';
@@ -168,7 +185,7 @@ async function main() {
   const account = resolveAccount(db, options);
   const conversation = resolveConversation(db, account.account_id, options);
   const contextToken = resolveContextToken(db, account.account_id, conversation.peer_user_id);
-  const sessionId = options.sessionId?.trim() || (options.useBridgeSession ? (conversation.runner_thread_id || 'unknown') : 'unknown');
+  const sessionId = resolveSourceSessionId(options, conversation);
   const sessionName = await resolveSessionName({
     sessionId,
     sessionName: options.sessionName,
@@ -195,7 +212,9 @@ async function main() {
   console.log(JSON.stringify({ ok: true, messageId: result.messageId, sessionId, sessionName }));
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (invokedScriptUrl === currentScriptUrl) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

@@ -24,6 +24,8 @@ This skill separates two different things:
 
 Do not confuse the bridge-side mapped conversation session with the source Codex session that produced the work.
 
+When this skill runs inside a normal Codex Desktop session and you do not pass `--session-id`, it will automatically use the current `CODEX_THREAD_ID` as the source session id when available.
+
 ## What this skill is for
 
 - Send a single completion notification after finishing a meaningful task.
@@ -48,7 +50,8 @@ Do not confuse the bridge-side mapped conversation session with the source Codex
 - Keep the field labels exactly as shown above.
 - Use Chinese for `Task Overview`, `Final Results`, and `Next Step` when talking to the user.
 - Use Beijing time (`Asia/Shanghai`) and 24-hour format for `Timestamp`.
-- Prefer explicit `--session-id` and `--session-name` values from the session that completed the work.
+- Prefer explicit `--session-id` and `--session-name` values from the session that completed the work when you have them.
+- Otherwise rely on the current Codex Desktop session id auto-detection before falling back to `unknown`.
 - Only use bridge-side session metadata as an explicit fallback when you intentionally want to report the mapped WeChat session instead.
 
 ## How to send

@@ -2,6 +2,10 @@
 
 **English** | [简体中文](./README_CN.md)
 
+<p align="center">
+  <img src="./assets/desktop/codex_wechat_desktop_round.png" alt="Codex WeChat Bridge icon" width="140" />
+</p>
+
 [![Platform](https://img.shields.io/badge/platform-Windows%2011-0078D6)](https://www.microsoft.com/windows)
 [![Runtime](https://img.shields.io/badge/runtime-Node%2022-339933)](https://nodejs.org/)
 [![Codex](https://img.shields.io/badge/Codex-Desktop-111111)](https://developers.openai.com/codex/plugins/build)
@@ -56,8 +60,12 @@ The intended operating model is:
 - quoted-message inbound awareness for single-message WeChat replies
 - inbound attachment ingress for images and files into a local cache directory
 - WeChat-side session switching and session inspection
-- segmented partial replies plus optional full summary via `/final`
+- segmented partial replies to avoid long periods of silent waiting, plus optional full summary via `/final`
+- structured block handling for fenced code, tables, lists, and attachment-style outputs
+- inbound image and file caching under the plugin runtime cache directory, with attachment-aware prompt injection
 - WeChat-side control commands such as `/help`, `/session`, `/use-session`, `/append`, `/stop`, `/status`, `/quota`, `/model`, `/effort`, `/skills`
+- model / reasoning-effort overrides from WeChat
+- optional final-summary toggle from WeChat
 - Windows tray controls for daemon lifecycle and status
 - desktop shortcut / launcher without keeping a terminal window open
 
@@ -198,24 +206,26 @@ npm run typecheck
 
 ### WeChat Commands
 
-- `/help`
-- `/pwd`
-- `/session`
-- `/newsession`
-- `/use-session <id>`
-- `/append <text>`
-- `/stop`
-- `/pending [continue|clear]`
-- `/model [id|default]`
-- `/effort [level|default]`
-- `/final [on|off|default]`
-- `/quota`
-- `/skills`
-- `/status`
-- `/diagnostics [n]`
-- `/threads`
-- `/sessions [n]`
-- `/ls [path]`
+- `/help` - show the available bridge commands.
+- `/pwd` - show the current workspace for this WeChat chat.
+- `/session` - show the current backend, session id, and mapped workspace.
+- `/newsession` - clear the current session binding so the next message starts a new session.
+- `/use-session <id>` - bind this WeChat chat to a specific Codex session.
+- `/append <text>` - append steering text to the currently running task when supported.
+- `/stop` - stop the currently running task for this chat.
+- `/pending` - show the current backlog review state for this chat.
+- `/pending continue` - continue processing the current backlog review items.
+- `/pending clear` - discard the current backlog review items.
+- `/model [id|default]` - inspect or override the model used for new turns.
+- `/effort [level|default]` - inspect or override the reasoning effort used for new turns.
+- `/final [on|off|default]` - control whether a final full-summary message is sent.
+- `/quota` - read the latest Codex rate-limit snapshot.
+- `/skills` - list the currently installed local and plugin skills.
+- `/status` - show bridge health, account state, and recent reply status.
+- `/diagnostics [n]` - show the most recent diagnostic events.
+- `/threads` - show recent WeChat-to-Codex conversation mappings.
+- `/sessions [n]` - list available Codex app-server sessions that can be bound.
+- `/ls [path]` - list files in the current workspace or a relative subdirectory.
 
 ## Attachments
 

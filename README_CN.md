@@ -2,6 +2,10 @@
 
 [English](./README.md) | **简体中文**
 
+<p align="center">
+  <img src="./assets/desktop/codex_wechat_desktop_round.png" alt="Codex WeChat Bridge icon" width="140" />
+</p>
+
 [![Platform](https://img.shields.io/badge/platform-Windows%2011-0078D6)](https://www.microsoft.com/windows)
 [![Runtime](https://img.shields.io/badge/runtime-Node%2022-339933)](https://nodejs.org/)
 [![Codex](https://img.shields.io/badge/Codex-Desktop-111111)](https://developers.openai.com/codex/plugins/build)
@@ -56,8 +60,12 @@
 - 单条微信引用消息的入站感知
 - 图片/文件入站并下载到本地缓存目录
 - 微信侧 session 检查与切换
-- 分段输出与可选 `/final` 汇总
+- 分段输出，避免用户长时间等待却没有任何反馈，并支持可选 `/final` 汇总
+- fenced code、表格、列表、附件类输出的结构化处理
+- 图片/文件附件写入插件运行时缓存目录，并以附件感知方式注入给 Codex
 - 微信侧控制命令，如 `/help`、`/session`、`/use-session`、`/append`、`/stop`、`/status`、`/quota`、`/model`、`/effort`、`/skills`
+- 支持从微信侧覆盖模型与推理强度
+- 支持从微信侧切换是否发送最终完整汇总
 - Windows 托盘控制 daemon 生命周期与状态
 - 桌面快捷方式 / launcher，无需长期保留终端窗口
 
@@ -188,24 +196,26 @@ npm run install:tray
 
 ### 微信侧命令
 
-- `/help`
-- `/pwd`
-- `/session`
-- `/newsession`
-- `/use-session <id>`
-- `/append <text>`
-- `/stop`
-- `/pending [continue|clear]`
-- `/model [id|default]`
-- `/effort [level|default]`
-- `/final [on|off|default]`
-- `/quota`
-- `/skills`
-- `/status`
-- `/diagnostics [n]`
-- `/threads`
-- `/sessions [n]`
-- `/ls [path]`
+- `/help` - 显示可用桥接命令列表。
+- `/pwd` - 显示当前微信聊天对应的工作目录。
+- `/session` - 显示当前 backend、session id 与映射的 workspace。
+- `/newsession` - 清除当前 session 绑定，让下一条消息新建 session。
+- `/use-session <id>` - 将当前微信聊天绑定到指定 Codex session。
+- `/append <text>` - 在支持的情况下向当前运行任务追加引导文本。
+- `/stop` - 停止当前聊天正在运行的任务。
+- `/pending` - 查看当前聊天的 backlog 审核状态。
+- `/pending continue` - 继续处理当前 backlog 审核项。
+- `/pending clear` - 丢弃当前 backlog 审核项。
+- `/model [id|default]` - 查看或覆盖新一轮对话使用的模型。
+- `/effort [level|default]` - 查看或覆盖新一轮对话使用的推理强度。
+- `/final [on|off|default]` - 控制是否发送最终完整汇总消息。
+- `/quota` - 查看最新 Codex 额度快照。
+- `/skills` - 列出当前已安装的本地技能和插件技能。
+- `/status` - 查看桥接健康状态、账号状态与最近回复情况。
+- `/diagnostics [n]` - 查看最近的诊断事件。
+- `/threads` - 查看最近的微信到 Codex 会话映射。
+- `/sessions [n]` - 列出可绑定的 Codex app-server sessions。
+- `/ls [path]` - 列出当前 workspace 或相对子目录中的文件。
 
 ## 附件
 

@@ -379,12 +379,19 @@ $restartDaemon.Add_Click({
 
 $startMcp = $contextMenu.Items.Add("MCP Help")
 $startMcp.Add_Click({
-  $notifyIcon.ShowBalloonTip(
-    4000,
-    "WeChat Bridge",
-    "The MCP server uses stdio and is started by Codex Desktop on demand. Use the plugin again after restarting Codex Desktop if you need a fresh MCP connection.",
-    [System.Windows.Forms.ToolTipIcon]::Info
-  )
+  $message = @(
+    "The bridge MCP server is a stdio MCP server."
+    ""
+    "It is started by Codex Desktop on demand when the plugin is used."
+    ""
+    "You do not need to start it manually from the tray."
+    ""
+    "If the MCP connection looks stale:"
+    "- use 'Reset MCP Connection' to stop current MCP processes"
+    "- then use the plugin again in Codex Desktop"
+    "- Codex Desktop will relaunch the MCP server on the next use"
+  ) -join [Environment]::NewLine
+  [System.Windows.Forms.MessageBox]::Show($message, "WeChat Bridge MCP Help") | Out-Null
 })
 $stopMcp = $contextMenu.Items.Add("Stop Current MCP Processes")
 $stopMcp.Add_Click({ Stop-BridgeProcess -Patterns $mcpPatterns; Stop-BridgeProcess -Patterns $mcpTsPatterns })

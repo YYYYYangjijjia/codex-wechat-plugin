@@ -111,6 +111,8 @@ Optional on Windows, if a tray entrypoint is desired:
 npm run install:tray
 ```
 
+This installs the tray launcher and creates the desktop shortcut automatically.
+
 Then:
 - double-click the desktop shortcut `WeChat Bridge`
 - or run `npm run tray`
@@ -173,6 +175,8 @@ If a Windows tray entrypoint is desired, install the optional tray launcher and 
 ```powershell
 npm run install:tray
 ```
+
+This installs both pieces together; no separate shortcut setup is required.
 
 This generates:
 - a launcher executable under the installed plugin runtime:

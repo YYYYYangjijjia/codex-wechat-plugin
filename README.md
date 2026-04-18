@@ -22,6 +22,21 @@ Once installed and logged in, the bridge can:
 - send replies back to WeChat
 - expose bridge controls from both WeChat and Codex
 
+## Who This Is For
+
+This project is aimed at:
+
+- heavy personal Codex users
+- Codex Desktop users on Windows
+- users who want WeChat access to Codex without installing OpenClaw as a separate runtime
+- users who occasionally need to control the Codex session running on their computer from WeChat on their phone
+- users who need the WeChat bridge side to inspect and switch Codex sessions explicitly
+
+The intended operating model is:
+- Codex runs on the desktop
+- WeChat acts as a remote private-chat control and reply surface
+- the bridge keeps the WeChat chat mapped to a session-aware Codex workflow
+
 ## Compatibility
 
 - **Primary supported environment:** Windows 11
@@ -36,15 +51,19 @@ Once installed and logged in, the bridge can:
 - private-chat receive/reply loop
 - Codex app-server primary backend with `codex exec` fallback
 - WeChat session mapping, rebinding, and diagnostics
+- quoted-message inbound awareness for single-message WeChat replies
+- inbound attachment ingress for images and files into a local cache directory
+- WeChat-side session switching and session inspection
 - segmented partial replies plus optional full summary via `/final`
 - WeChat-side control commands such as `/help`, `/session`, `/use-session`, `/append`, `/stop`, `/status`, `/quota`, `/model`, `/effort`, `/skills`
-- inbound attachment ingress for images and files into a local cache directory
 - Windows tray controls for daemon lifecycle and status
 - desktop shortcut / launcher without keeping a terminal window open
 
 ### Not Yet Implemented
 - group chat support
-- outbound image/file sending parity
+- inbound voice-only message understanding
+- outbound image / file sending parity back to WeChat
+- merged chat-history forwarding support
 - full long-term unattended hardening beyond the current local runtime guardrails
 
 ## Architecture
@@ -69,14 +88,22 @@ cd codex-wechat-plugin
 npm install
 npm run build
 npm run install:plugin
-npm run install:tray
 ```
 
 Then:
 1. Restart Codex Desktop.
-2. Double-click the desktop shortcut `WeChat Bridge`, or run `npm run tray`.
-3. Run `npm run login` once to start QR login.
-4. Scan the QR code and send a private message to the connected WeChat chat.
+2. Run `npm run login` once to start QR login.
+3. Scan the QR code and send a private message to the connected WeChat chat.
+
+Optional on Windows, if a tray entrypoint is desired:
+
+```powershell
+npm run install:tray
+```
+
+Then:
+- double-click the desktop shortcut `WeChat Bridge`
+- or run `npm run tray`
 
 `npm run install:plugin` stages a trimmed runtime copy into:
 - `~/.codex/plugins/codex-wechat-bridge`
@@ -115,7 +142,6 @@ Suggested local verification flow for an agent:
 
 ```powershell
 npm run install:plugin
-npm run install:tray
 ```
 
 Then in Codex Desktop:
@@ -123,6 +149,12 @@ Then in Codex Desktop:
 - verify `WeChat Bridge` appears in the plugin list
 - if needed, use `Plugin Eval` to evaluate the installed plugin at:
   - `~/.codex/plugins/codex-wechat-bridge`
+
+Optional on Windows, if tray controls are needed:
+
+```powershell
+npm run install:tray
+```
 
 ## Windows Tray And Shortcut
 
@@ -157,7 +189,6 @@ For MCP:
 ```powershell
 npm run build
 npm run install:plugin
-npm run install:tray
 npm run login
 npm run test
 npm run typecheck
@@ -229,5 +260,17 @@ Current local validation includes:
 
 ## Reference
 
-Tencent's `openclaw-weixin` was used as a protocol and state-machine reference during development. See:
+This project references the public Tencent `openclaw-weixin` repository for protocol clues, state-machine behavior, and media-handling ideas:
+
+- [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)
+
+Additional analysis for this repository is documented in:
+
 - [docs/reference-analysis.md](./docs/reference-analysis.md)
+
+The resulting implementation is rebuilt for Codex Desktop as a local plugin + daemon workflow.
+
+It is:
+- not an OpenClaw plugin
+- not dependent on OpenClaw at runtime
+- not a wrapper around the original project

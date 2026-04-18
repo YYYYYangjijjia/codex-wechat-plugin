@@ -237,11 +237,18 @@ npm run typecheck
 - `/session` - show the current backend, session id, latest session name, and mapped workspace.
 - `/new-session [name]` - clear the current session binding and optionally name the next newly created session.
 - `/newsession` - legacy alias for `/new-session`.
-- `/use-session <id>` - bind this WeChat chat to a specific Codex session.
+- `/use-session <id>` - bind this WeChat chat to a specific Codex session and verify its live workspace and session name.
 - `/test-session` - switch this chat to the configured shared test session.
 - `/test-session bind <id>` - bind or replace the shared test session id.
 - `/test-session quit` - leave the shared test session and return to the latest recorded non-test session.
 - `/test-session unbind` - clear the shared test session binding.
+- `/record-session` - list all saved session record aliases.
+- `/record-session add <record-name> <session-id>` - save a persistent alias for a specific session.
+- `/record-session delete <record-name>` - delete one saved session record alias.
+- `/record-session clear` - request confirmation before clearing all saved session record aliases.
+- `/use-record <record-name>` - switch this chat to a saved session record alias.
+- `/yes` - confirm the current pending destructive action.
+- `/no` - cancel the current pending destructive action.
 - `/append <text>` - append steering text to the currently running task when supported.
 - `/stop` - stop the currently running task for this chat.
 - `/pending` - show the current backlog review state for this chat.
@@ -276,8 +283,8 @@ The bridge injects attachment metadata and local paths into the Codex prompt. Th
 - [`src/cli/mcp-server.ts`](./src/cli/mcp-server.ts): MCP server entrypoint
 - [`scripts/install-codex-plugin.ps1`](./scripts/install-codex-plugin.ps1): local Codex plugin installer
 - [`scripts/install-tray-launcher.ps1`](./scripts/install-tray-launcher.ps1): tray + desktop shortcut installer
-- [`skills/wechat-bridge-ops/SKILL.md`](./skills/wechat-bridge-ops/SKILL.md): bundled operational skill (`codex-wechat-bridge:ops`)
-- [`skills/task-finished-notifier/SKILL.md`](./skills/task-finished-notifier/SKILL.md): bundled completion-notification skill (`codex-wechat-bridge:task-finished-notifier`)
+- [`skills/wechat-bridge-ops/SKILL.md`](./skills/wechat-bridge-ops/SKILL.md): bundled operational skill (`codex-wechat-bridge:ops`, displayed as `WeChat Bridge: Ops`)
+- [`skills/task-finished-notifier/SKILL.md`](./skills/task-finished-notifier/SKILL.md): bundled completion-notification skill (`codex-wechat-bridge:task-finished-notifier`, displayed as `WeChat Bridge: Task Finished Notifier`)
 - [`docs/human-guide.md`](./docs/human-guide.md): operator-oriented guide
 - [`docs/codex-agent-guide.md`](./docs/codex-agent-guide.md): Codex-agent-oriented guide
 - [`docs/architecture.md`](./docs/architecture.md): architecture summary

@@ -771,6 +771,8 @@ export class BridgeService {
       }
       try {
         const thread = await this.appServerCodexRunner.resumeThread(input.result.action.threadId);
+        const sessions = await this.appServerCodexRunner.listThreads({ limit: 50 });
+        const sessionSummary = sessions.find((session) => session.id === thread.id);
         this.clearPendingNewSessionName(input.conversation.conversationKey);
         this.stateStore.updateConversationThread(input.conversation.conversationKey, {
           runnerBackend: "app_server",
@@ -787,7 +789,8 @@ export class BridgeService {
           this.stateStore.saveRuntimeState(`${TEST_SESSION_RETURN_PREFIX}${input.conversation.conversationKey}`, null);
         }
         return [
-          `Switched this chat to session ${thread.id}.`,
+          `⚙️ Switched this chat to session ${thread.id}.`,
+          `session name: ${sessionSummary?.name?.trim() ? sessionSummary.name.trim() : "unknown"}`,
           `workspace: ${thread.cwd ?? "unknown"}`,
         ].join("\n");
       } catch (error) {

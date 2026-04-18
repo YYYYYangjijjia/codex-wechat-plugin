@@ -142,10 +142,14 @@ describe("wechat control commands", () => {
     expect(result.responseText).toContain("Available commands:");
     expect(result.responseText).toContain("\n- /help");
     expect(result.responseText).toContain("\n- /pwd");
-    expect(result.responseText).toContain("\n- /new-session [name]");
-    expect(result.responseText).toContain("\n- /test-session");
-    expect(result.responseText).toContain("\n- /test-session quit");
-    expect(result.responseText).toContain("\n- /quota");
+      expect(result.responseText).toContain("\n- /new-session [name]");
+      expect(result.responseText).toContain("\n- /test-session");
+      expect(result.responseText).toContain("\n- /test-session quit");
+      expect(result.responseText).toContain("\n- /record-session");
+      expect(result.responseText).toContain("\n- /use-record");
+      expect(result.responseText).toContain("\n- /yes");
+      expect(result.responseText).toContain("\n- /no");
+      expect(result.responseText).toContain("\n- /quota");
     expect(result.responseText).toContain("\n- /skills");
     expect(result.responseText).toContain("\n- /stop");
     expect(result.responseText).toContain("\n- /append");
@@ -610,6 +614,173 @@ describe("wechat control commands", () => {
 
     expect(result.responseText).toContain("not currently on the shared test session");
     expect(result.action).toBeUndefined();
+  });
+
+  test("adds, lists, uses, deletes, and clears saved session records with confirmation", () => {
+    const store = new FakeStore();
+
+    const addResult = handleWechatControlCommand({
+      text: "/record-session add alpha thread-app-9",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const listResult = handleWechatControlCommand({
+      text: "/record-session",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const useRecordResult = handleWechatControlCommand({
+      text: "/use-record alpha",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const deleteResult = handleWechatControlCommand({
+      text: "/record-session delete alpha",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const clearEmptyResult = handleWechatControlCommand({
+      text: "/record-session clear",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+
+    handleWechatControlCommand({
+      text: "/record-session add beta thread-app-10",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const clearRequest = handleWechatControlCommand({
+      text: "/record-session clear",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const noResult = handleWechatControlCommand({
+      text: "/no",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const yesWithoutPending = handleWechatControlCommand({
+      text: "/yes",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const clearRequestAgain = handleWechatControlCommand({
+      text: "/record-session clear",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const yesResult = handleWechatControlCommand({
+      text: "/YES",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const finalList = handleWechatControlCommand({
+      text: "/record-session",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+
+    expect(addResult.responseText).toContain("Saved session record alpha -> thread-app-9");
+    expect(listResult.responseText).toContain("alpha -> thread-app-9");
+    expect(useRecordResult.action).toEqual({ type: "use_session", threadId: "thread-app-9" });
+    expect(deleteResult.responseText).toContain("Deleted session record alpha");
+    expect(clearEmptyResult.responseText).toContain("There are no saved session records to clear");
+    expect(clearRequest.responseText).toContain("Reply with /yes to confirm or /no to cancel within 5 minutes");
+    expect(noResult.responseText).toContain("Canceled the pending action");
+    expect(yesWithoutPending.responseText).toContain("There is no pending action waiting for confirmation");
+    expect(clearRequestAgain.responseText).toContain("Reply with /yes to confirm or /no to cancel within 5 minutes");
+    expect(yesResult.responseText).toContain("Cleared all saved session records");
+    expect(finalList.responseText).toContain("saved session records:\n- none");
+  });
+
+  test("rejects duplicate record names case-insensitively and handles missing records", () => {
+    const store = new FakeStore();
+    store.runtime.set("session_records", [{ name: "Alpha", threadId: "thread-app-1" }]);
+
+    const addDuplicate = handleWechatControlCommand({
+      text: "/record-session add alpha thread-app-2",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const useMissing = handleWechatControlCommand({
+      text: "/use-record beta",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const deleteMissing = handleWechatControlCommand({
+      text: "/record-session delete beta",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+
+    expect(addDuplicate.responseText).toContain("already exists");
+    expect(useMissing.responseText).toContain("No saved session record named beta exists");
+    expect(deleteMissing.responseText).toContain("No saved session record named beta exists");
+  });
+
+  test("expires or cancels pending confirmations before /yes or /no", () => {
+    const store = new FakeStore();
+    const expiredAt = new Date(Date.now() - (6 * 60 * 1000)).toISOString();
+    store.runtime.set("pending_confirmation:acct-1:user-a", { kind: "clear_session_records", createdAt: expiredAt });
+
+    const expiredYes = handleWechatControlCommand({
+      text: "/yes",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    expect(expiredYes.responseText).toContain("pending confirmation has expired");
+
+    store.runtime.set("pending_confirmation:acct-1:user-a", { kind: "clear_session_records", createdAt: new Date().toISOString() });
+    const otherCommand = handleWechatControlCommand({
+      text: "/status",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    expect(otherCommand.responseText).toContain("workspace:");
+
+    const lateYes = handleWechatControlCommand({
+      text: "/yes",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    expect(lateYes.responseText).toContain("There is no pending action waiting for confirmation");
   });
 
   test("returns a live quota action", () => {

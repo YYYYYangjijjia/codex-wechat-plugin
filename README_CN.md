@@ -256,8 +256,8 @@ npm run typecheck
 - [`src/cli/mcp-server.ts`](./src/cli/mcp-server.ts)：MCP server 入口
 - [`scripts/install-codex-plugin.ps1`](./scripts/install-codex-plugin.ps1)：本地 Codex plugin 安装脚本
 - [`scripts/install-tray-launcher.ps1`](./scripts/install-tray-launcher.ps1)：tray + 桌面快捷方式安装脚本
-- [`skills/wechat-bridge-ops/SKILL.md`](./skills/wechat-bridge-ops/SKILL.md)：内置运维技能 (`codex-wechat-bridge:ops`)
-- [`skills/task-finished-notifier/SKILL.md`](./skills/task-finished-notifier/SKILL.md)：内置任务完成通知技能 (`codex-wechat-bridge:task-finished-notifier`)
+- [`skills/wechat-bridge-ops/SKILL.md`](./skills/wechat-bridge-ops/SKILL.md)：内置运维技能 (`codex-wechat-bridge:ops`?? Codex ???? `WeChat Bridge: Ops`)
+- [`skills/task-finished-notifier/SKILL.md`](./skills/task-finished-notifier/SKILL.md)：内置任务完成通知技能 (`codex-wechat-bridge:task-finished-notifier`?? Codex ???? `WeChat Bridge: Task Finished Notifier`)
 - [`docs/human-guide.md`](./docs/human-guide.md)：面向操作用户的文档
 - [`docs/codex-agent-guide.md`](./docs/codex-agent-guide.md)：面向 Codex agent 的文档
 - [`docs/architecture.md`](./docs/architecture.md)：架构说明

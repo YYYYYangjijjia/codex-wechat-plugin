@@ -37,6 +37,14 @@ type TestSessionBinding = {
   threadId: string;
 };
 
+type SessionRecordEntry = {
+  name: string;
+  threadId: string;
+};
+
+type PendingConfirmation =
+  | { kind: "clear_session_records"; createdAt: string };
+
 type CommandAction =
   | { type: "stop" }
   | { type: "append"; guidance: string }
@@ -55,6 +63,9 @@ type SystemMessageCategory = "control" | "status" | "config" | "success" | "warn
 export const TEST_SESSION_BINDING_KEY = "test_session_binding";
 export const NEXT_NEW_SESSION_NAME_PREFIX = "next_new_session_name:";
 export const TEST_SESSION_RETURN_PREFIX = "test_session_return:";
+export const SESSION_RECORDS_KEY = "session_records";
+export const PENDING_CONFIRMATION_PREFIX = "pending_confirmation:";
+const PENDING_CONFIRMATION_TTL_MS = 5 * 60 * 1000;
 
 export function parseWechatControlCommand(text: string): ParsedCommand | undefined {
   const trimmed = text.trim();
@@ -94,6 +105,10 @@ export function handleWechatControlCommand(input: {
   if (!parsed) {
     return { handled: false };
   }
+  const existingConfirmation = readPendingConfirmation(input.stateStore, input.conversation.conversationKey);
+  if (parsed.name !== "yes" && parsed.name !== "no" && existingConfirmation) {
+    clearPendingConfirmation(input.stateStore, input.conversation.conversationKey);
+  }
   const runtimePreferences = readRuntimePreferences(input.stateStore.getRuntimeState("codex_runtime_preferences"));
   const effectiveWorkspaceDir = input.currentSession?.cwd ?? input.conversation.runnerCwd ?? input.workspaceDir;
 
@@ -113,6 +128,13 @@ export function handleWechatControlCommand(input: {
           "- /test-session bind <id> - bind the shared test session id",
           "- /test-session quit - leave the shared test session and return to the latest non-test session",
           "- /test-session unbind - clear the shared test session id",
+          "- /record-session - list saved session records",
+          "- /record-session add <record-name> <session-id> - save a persistent alias for a session id",
+          "- /record-session delete <record-name> - delete a saved session record",
+          "- /record-session clear - request confirmation before clearing all saved session records",
+          "- /use-record <record-name> - switch this chat to a saved session record",
+          "- /yes - confirm the pending destructive action for this chat",
+          "- /no - cancel the pending destructive action for this chat",
           "- /quota - show the current Codex rate-limit snapshot",
           "- /skills - show the currently installed local and plugin skills",
           "- /stop - interrupt the current Codex task for this chat",
@@ -170,6 +192,28 @@ export function handleWechatControlCommand(input: {
         handled: true,
         responseText: formatSystemReply("config", `Switching this chat to session ${threadId}. Verifying the target workspace first.`),
         action: { type: "use_session", threadId },
+      };
+    }
+    case "use-record": {
+      const recordName = parsed.args[0]?.trim();
+      if (!recordName) {
+        return {
+          handled: true,
+          responseText: formatSystemReply("warning", "Usage: /use-record <record-name>"),
+        };
+      }
+      const records = readSessionRecords(input.stateStore.getRuntimeState(SESSION_RECORDS_KEY));
+      const record = findSessionRecord(records, recordName);
+      if (!record) {
+        return {
+          handled: true,
+          responseText: formatSystemReply("warning", `No saved session record named ${recordName} exists.`),
+        };
+      }
+      return {
+        handled: true,
+        responseText: formatSystemReply("config", `Switching this chat to saved record ${record.name} (${record.threadId}).`),
+        action: { type: "use_session", threadId: record.threadId },
       };
     }
     case "test-session": {
@@ -243,6 +287,127 @@ export function handleWechatControlCommand(input: {
       return {
         handled: true,
         responseText: formatSystemReply("warning", "Usage: /test-session [bind <session-id>|quit|unbind]"),
+      };
+    }
+    case "record-session": {
+      const subcommand = parsed.args[0]?.toLowerCase();
+      const records = readSessionRecords(input.stateStore.getRuntimeState(SESSION_RECORDS_KEY));
+      if (!subcommand) {
+        return {
+          handled: true,
+          responseText: formatSystemReply("config", formatSessionRecords(records)),
+        };
+      }
+      if (subcommand === "add") {
+        const recordName = parsed.args[1]?.trim();
+        const threadId = parsed.args[2]?.trim();
+        if (!recordName || !threadId) {
+          return {
+            handled: true,
+            responseText: formatSystemReply("warning", "Usage: /record-session add <record-name> <session-id>"),
+          };
+        }
+        if (findSessionRecord(records, recordName)) {
+          return {
+            handled: true,
+            responseText: formatSystemReply("warning", `A session record named ${recordName} already exists. Choose a different record name.`),
+          };
+        }
+        const next = [...records, { name: recordName, threadId }];
+        saveSessionRecords(input.stateStore, next);
+        clearPendingConfirmation(input.stateStore, input.conversation.conversationKey);
+        return {
+          handled: true,
+          responseText: formatSystemReply("config", `Saved session record ${recordName} -> ${threadId}.`),
+        };
+      }
+      if (subcommand === "delete") {
+        const recordName = parsed.args[1]?.trim();
+        if (!recordName) {
+          return {
+            handled: true,
+            responseText: formatSystemReply("warning", "Usage: /record-session delete <record-name>"),
+          };
+        }
+        const target = findSessionRecord(records, recordName);
+        if (!target) {
+          return {
+            handled: true,
+            responseText: formatSystemReply("warning", `No saved session record named ${recordName} exists.`),
+          };
+        }
+        saveSessionRecords(input.stateStore, records.filter((entry) => normalizeRecordName(entry.name) !== normalizeRecordName(target.name)));
+        clearPendingConfirmation(input.stateStore, input.conversation.conversationKey);
+        return {
+          handled: true,
+          responseText: formatSystemReply("config", `Deleted session record ${target.name}.`),
+        };
+      }
+      if (subcommand === "clear") {
+        if (records.length === 0) {
+          return {
+            handled: true,
+            responseText: formatSystemReply("warning", "There are no saved session records to clear."),
+          };
+        }
+        savePendingConfirmation(input.stateStore, input.conversation.conversationKey, { kind: "clear_session_records", createdAt: new Date().toISOString() });
+        return {
+          handled: true,
+          responseText: formatSystemReply("warning", "This will clear all saved session records. Reply with /yes to confirm or /no to cancel within 5 minutes. Any other command will cancel it."),
+        };
+      }
+      return {
+        handled: true,
+        responseText: formatSystemReply("warning", "Usage: /record-session [add <record-name> <session-id>|delete <record-name>|clear]"),
+      };
+    }
+    case "yes": {
+      const confirmation = readPendingConfirmation(input.stateStore, input.conversation.conversationKey);
+      if (!confirmation) {
+        return {
+          handled: true,
+          responseText: formatSystemReply("warning", "There is no pending action waiting for confirmation."),
+        };
+      }
+      if (isPendingConfirmationExpired(confirmation)) {
+        clearPendingConfirmation(input.stateStore, input.conversation.conversationKey);
+        return {
+          handled: true,
+          responseText: formatSystemReply("warning", "The pending confirmation has expired. Run the original command again if you still want to do it."),
+        };
+      }
+      clearPendingConfirmation(input.stateStore, input.conversation.conversationKey);
+      if (confirmation.kind === "clear_session_records") {
+        saveSessionRecords(input.stateStore, []);
+        return {
+          handled: true,
+          responseText: formatSystemReply("success", "Cleared all saved session records."),
+        };
+      }
+      return {
+        handled: true,
+        responseText: formatSystemReply("warning", "The pending confirmation could not be resolved."),
+      };
+    }
+    case "no": {
+      const confirmation = readPendingConfirmation(input.stateStore, input.conversation.conversationKey);
+      if (!confirmation) {
+        return {
+          handled: true,
+          responseText: formatSystemReply("warning", "There is no pending action waiting for confirmation."),
+        };
+      }
+      if (isPendingConfirmationExpired(confirmation)) {
+        clearPendingConfirmation(input.stateStore, input.conversation.conversationKey);
+        return {
+          handled: true,
+          responseText: formatSystemReply("warning", "The pending confirmation has already expired."),
+        };
+      }
+      clearPendingConfirmation(input.stateStore, input.conversation.conversationKey);
+      return {
+        handled: true,
+        responseText: formatSystemReply("config", "Canceled the pending action."),
       };
     }
     case "quota":
@@ -795,6 +960,19 @@ function formatPendingReview(value?: PendingReviewSummary): string {
   ].join("\n");
 }
 
+function formatSessionRecords(records: SessionRecordEntry[]): string {
+  if (records.length === 0) {
+    return "saved session records:\n- none";
+  }
+  return [
+    "saved session records:",
+    ...records
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((record) => `- ${record.name} -> ${record.threadId}`),
+  ].join("\n");
+}
+
 function formatReset(value: unknown): string {
   return typeof value === "number" ? new Date(value * 1000).toISOString() : "unknown";
 }
@@ -837,9 +1015,62 @@ function readTestSessionBinding(value: unknown): TestSessionBinding | undefined 
   };
 }
 
+function readSessionRecords(value: unknown): SessionRecordEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((entry): entry is { name: unknown; threadId: unknown } => isObject(entry))
+    .map((entry) => ({
+      name: typeof entry.name === "string" ? entry.name.trim() : "",
+      threadId: typeof entry.threadId === "string" ? entry.threadId.trim() : "",
+    }))
+    .filter((entry) => entry.name.length > 0 && entry.threadId.length > 0);
+}
+
+function saveSessionRecords(stateStore: ControlCommandStore, records: SessionRecordEntry[]): void {
+  stateStore.saveRuntimeState(SESSION_RECORDS_KEY, records.map((record) => ({ name: record.name, threadId: record.threadId })));
+}
+
+function findSessionRecord(records: SessionRecordEntry[], recordName: string): SessionRecordEntry | undefined {
+  const normalized = normalizeRecordName(recordName);
+  return records.find((entry) => normalizeRecordName(entry.name) === normalized);
+}
+
+function normalizeRecordName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 function readTestSessionReturnThread(stateStore: ControlCommandStore, conversationKey: string): string | undefined {
   const value = stateStore.getRuntimeState(`${TEST_SESSION_RETURN_PREFIX}${conversationKey}`);
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readPendingConfirmation(stateStore: ControlCommandStore, conversationKey: string): PendingConfirmation | undefined {
+  const value = stateStore.getRuntimeState(`${PENDING_CONFIRMATION_PREFIX}${conversationKey}`);
+  if (!isObject(value)) {
+    return undefined;
+  }
+  if (value.kind === "clear_session_records" && typeof value.createdAt === "string" && value.createdAt.trim()) {
+    return { kind: "clear_session_records", createdAt: value.createdAt };
+  }
+  return undefined;
+}
+
+function savePendingConfirmation(stateStore: ControlCommandStore, conversationKey: string, value: PendingConfirmation): void {
+  stateStore.saveRuntimeState(`${PENDING_CONFIRMATION_PREFIX}${conversationKey}`, value);
+}
+
+function clearPendingConfirmation(stateStore: ControlCommandStore, conversationKey: string): void {
+  stateStore.saveRuntimeState(`${PENDING_CONFIRMATION_PREFIX}${conversationKey}`, null);
+}
+
+function isPendingConfirmationExpired(value: PendingConfirmation): boolean {
+  const createdAt = Date.parse(value.createdAt);
+  if (!Number.isFinite(createdAt)) {
+    return true;
+  }
+  return Date.now() - createdAt > PENDING_CONFIRMATION_TTL_MS;
 }
 
 function saveTestSessionReturnThread(stateStore: ControlCommandStore, conversationKey: string, threadId: string | undefined): void {

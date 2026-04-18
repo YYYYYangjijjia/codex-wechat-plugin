@@ -30,6 +30,11 @@ npm run build
 
 ## Install the Codex Plugin
 
+Use the official Codex plugin installation model as the baseline reference:
+
+- [Codex plugins](https://developers.openai.com/codex/plugins)
+- [Build plugins](https://developers.openai.com/codex/plugins/build)
+
 ```powershell
 npm run install:plugin
 ```
@@ -40,6 +45,11 @@ This script:
 - registers the plugin in the local marketplace
 
 Restart Codex Desktop after installation.
+
+If the plugin still does not appear after following the official flow:
+- verify the staged runtime under `~/.codex/plugins/codex-wechat-bridge`
+- verify `~/.agents/plugins/marketplace.json`
+- optionally use the official `Plugin Eval` plugin against the installed runtime bundle for install-surface diagnostics
 
 ## Install the Tray Launcher and Desktop Shortcut
 

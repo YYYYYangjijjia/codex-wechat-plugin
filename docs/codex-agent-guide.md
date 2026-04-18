@@ -12,6 +12,42 @@ The plugin exposes:
 The intended runtime root is the installed plugin directory:
 - `~/.codex/plugins/codex-wechat-bridge`
 
+## Install Sequence For Codex Agent
+
+First, follow the official Codex plugin model:
+
+- [Codex plugins](https://developers.openai.com/codex/plugins)
+- [Build plugins](https://developers.openai.com/codex/plugins/build)
+
+Then apply this repository-specific install sequence:
+
+1. `npm install`
+2. `npm run build`
+3. `npm run install:plugin`
+4. optional on Windows: `npm run install:tray`
+5. fully restart Codex Desktop
+6. confirm that `WeChat Bridge` appears in the local plugin list
+
+Do not assume Codex Desktop will hot-reload the local marketplace without a full restart.
+
+## If Desktop Does Not Recognize The Plugin
+
+Use evidence, not guesses.
+
+Recommended checks:
+- verify the installed runtime exists at:
+  - `~/.codex/plugins/codex-wechat-bridge`
+- verify the local marketplace file exists at:
+  - `~/.agents/plugins/marketplace.json`
+- fully restart Codex Desktop after installation changes
+
+If the plugin still does not appear or seems malformed, the recommended next step is:
+- install the official `Plugin Eval` plugin
+- evaluate the installed local plugin bundle at:
+  - `~/.codex/plugins/codex-wechat-bridge`
+
+This is a fallback diagnostic step after following the official Codex plugin flow. It is preferred over ad hoc manifest edits, because `Plugin Eval` gives install-surface feedback on the actual staged runtime bundle rather than on the mutable source tree alone.
+
 ## Runtime Model
 
 The daemon is the autonomous engine.

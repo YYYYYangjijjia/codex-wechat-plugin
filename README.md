@@ -88,19 +88,41 @@ and updates:
 
 If a Codex agent is browsing this repository and needs to install it into the local Codex client, use:
 
+- follow the official Codex plugin installation model first:
+  - [Codex plugins](https://developers.openai.com/codex/plugins)
+  - [Build plugins](https://developers.openai.com/codex/plugins/build)
+- then apply this repository's local install commands:
+
 ```powershell
 npm install
 npm run build
 npm run install:plugin
 ```
 
-If the Windows tray launcher and desktop shortcut are also needed:
+Optional on Windows, if a tray entrypoint is desired:
 
 ```powershell
 npm run install:tray
 ```
 
-After installation, restart Codex Desktop so the local marketplace is reloaded.
+Then:
+
+1. Fully restart Codex Desktop so the local marketplace is reloaded.
+2. Confirm that `WeChat Bridge` appears in the plugin list.
+3. If the plugin does not appear or does not load correctly after following the official Codex plugin flow, use the official `Plugin Eval` plugin as a diagnostic step before changing local plugin files by hand.
+
+Suggested local verification flow for an agent:
+
+```powershell
+npm run install:plugin
+npm run install:tray
+```
+
+Then in Codex Desktop:
+- restart the app
+- verify `WeChat Bridge` appears in the plugin list
+- if needed, use `Plugin Eval` to evaluate the installed plugin at:
+  - `~/.codex/plugins/codex-wechat-bridge`
 
 ## Windows Tray And Shortcut
 

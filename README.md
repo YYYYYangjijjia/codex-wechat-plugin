@@ -1,5 +1,7 @@
 # Codex WeChat Bridge
 
+**English** | [简体中文](./README_CN.md)
+
 [![Platform](https://img.shields.io/badge/platform-Windows%2011-0078D6)](https://www.microsoft.com/windows)
 [![Runtime](https://img.shields.io/badge/runtime-Node%2022-339933)](https://nodejs.org/)
 [![Codex](https://img.shields.io/badge/Codex-Desktop-111111)](https://developers.openai.com/codex/plugins/build)

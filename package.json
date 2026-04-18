@@ -1,0 +1,38 @@
+{
+  "name": "codex-wechat-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Codex Desktop + WeChat bridge with a daemon, MCP server, and Codex plugin bundle.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "dev:daemon": "tsx src/cli/daemon.ts",
+    "dev:mcp": "tsx src/cli/mcp-server.ts",
+    "dev:status": "tsx src/cli/status.ts",
+    "login": "tsx src/cli/login.ts",
+    "start:daemon": "node dist/src/cli/daemon.js",
+    "start:mcp": "node dist/src/cli/mcp-server.js",
+    "start:status": "node dist/src/cli/status.js",
+    "tray": "powershell -ExecutionPolicy Bypass -File scripts/wechat-bridge-tray.ps1",
+    "install:plugin": "powershell -ExecutionPolicy Bypass -File scripts/install-codex-plugin.ps1",
+    "install:tray": "powershell -ExecutionPolicy Bypass -File scripts/install-tray-launcher.ps1",
+    "acceptance": "tsx scripts/acceptance-report.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.4"
+  }
+}

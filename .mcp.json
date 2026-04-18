@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "wechat-bridge": {
+      "command": "node",
+      "args": ["dist/src/cli/mcp-server.js"],
+      "cwd": "."
+    }
+  }
+}

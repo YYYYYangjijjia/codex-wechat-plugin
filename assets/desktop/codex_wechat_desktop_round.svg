@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bg2" x1="60" y1="52" x2="444" y2="452" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3ADF84"/>
+      <stop offset="1" stop-color="#08B864"/>
+    </linearGradient>
+    <radialGradient id="shine" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(174 130) rotate(36) scale(212 180)">
+      <stop offset="0" stop-color="white" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="white" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="ds" x="30" y="34" width="452" height="454" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#0D8E48" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#ds)">
+    <rect x="46" y="50" width="420" height="420" rx="116" fill="url(#bg2)"/>
+    <rect x="46" y="50" width="420" height="420" rx="116" fill="url(#shine)"/>
+  </g>
+
+  <!-- back bubble -->
+  <g>
+    <circle cx="314" cy="198" r="102" fill="white"/>
+    <path d="M250 271L260 230L293 262Z" fill="white"/>
+    <circle cx="279" cy="193" r="13" fill="#25C068"/>
+    <circle cx="349" cy="193" r="13" fill="#25C068"/>
+  </g>
+
+  <!-- front bubble -->
+  <g>
+    <circle cx="200" cy="271" r="130" fill="white"/>
+    <path d="M115 375L132 312L185 355Z" fill="white"/>
+
+    <!-- codex mark -->
+    <path d="M158 270L214 214" stroke="#1EBE67" stroke-width="30" stroke-linecap="round"/>
+    <path d="M158 270L214 326" stroke="#1EBE67" stroke-width="30" stroke-linecap="round"/>
+    <path d="M250 214L306 270" stroke="#1EBE67" stroke-width="30" stroke-linecap="round"/>
+    <path d="M250 326L306 270" stroke="#1EBE67" stroke-width="30" stroke-linecap="round"/>
+    <path d="M232 190L220 350" stroke="#1EBE67" stroke-width="26" stroke-linecap="round"/>
+  </g>
+
+  <!-- subtle outer ring for desktop icon pop -->
+  <rect x="58" y="62" width="396" height="396" rx="104" stroke="white" stroke-opacity="0.18" stroke-width="6"/>
+</svg>

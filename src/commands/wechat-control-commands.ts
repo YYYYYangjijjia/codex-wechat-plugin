@@ -1,0 +1,738 @@
+import fs from "node:fs";
+import path from "node:path";
+import type { AppServerModelSummary, AppServerThreadSummary } from "../codex/app-server-client.js";
+import type { ReasoningEffort, RunnerBackend } from "../codex/codex-runner.js";
+import type { InstalledSkillsCatalog } from "./installed-skills.js";
+import type { AccountRecord, ConversationRecord, DiagnosticEvent, PendingMessageRecord } from "../state/sqlite-state-store.js";
+
+type ControlCommandStore = {
+  clearConversationThread(conversationKey: string): void;
+  updateConversationThread(conversationKey: string, thread: { runnerBackend: RunnerBackend; runnerThreadId: string; runnerCwd?: string | undefined }): void;
+  saveRuntimeState(key: string, value: unknown): void;
+  getRuntimeState(key: string): unknown;
+  listConversations(): ConversationRecord[];
+  listAccounts(): AccountRecord[];
+  listPendingMessages(statuses?: Array<PendingMessageRecord["status"]>): PendingMessageRecord[];
+  listDiagnostics(limit?: number): DiagnosticEvent[];
+};
+
+type RuntimePreferences = {
+  model?: string | undefined;
+  reasoningEffort?: ReasoningEffort | undefined;
+  showFinalSummary?: boolean | undefined;
+};
+
+type ActiveTaskSummary = {
+  prompt: string;
+  runnerBackend?: RunnerBackend | undefined;
+  supportsAppend?: boolean | undefined;
+};
+
+type PendingReviewSummary = {
+  count: number;
+  items: string[];
+};
+
+type CommandAction =
+  | { type: "stop" }
+  | { type: "append"; guidance: string }
+  | { type: "use_session"; threadId: string }
+  | { type: "quota_read" }
+  | { type: "pending_continue" }
+  | { type: "pending_clear" };
+
+type ParsedCommand = {
+  name: string;
+  args: string[];
+};
+
+type SystemMessageCategory = "control" | "status" | "config" | "success" | "warning";
+
+export function parseWechatControlCommand(text: string): ParsedCommand | undefined {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("/")) {
+    return undefined;
+  }
+  const body = trimmed.slice(1).trim();
+  if (!body) {
+    return undefined;
+  }
+  const [name, ...args] = body.split(/\s+/).filter(Boolean);
+  if (!name) {
+    return undefined;
+  }
+  return {
+    name: name.toLowerCase(),
+    args,
+  };
+}
+
+export function handleWechatControlCommand(input: {
+  text: string;
+  stateStore: ControlCommandStore;
+  conversation: ConversationRecord;
+  workspaceDir: string;
+  primaryBackend: RunnerBackend;
+  defaultModel?: string | undefined;
+  defaultReasoningEffort?: ReasoningEffort | undefined;
+  activeTask?: ActiveTaskSummary | undefined;
+  installedSkills?: InstalledSkillsCatalog;
+  availableSessions?: AppServerThreadSummary[];
+  availableModels?: AppServerModelSummary[];
+  pendingReview?: PendingReviewSummary | undefined;
+}): { handled: boolean; responseText?: string | undefined; action?: CommandAction | undefined } {
+  const parsed = parseWechatControlCommand(input.text);
+  if (!parsed) {
+    return { handled: false };
+  }
+  const runtimePreferences = readRuntimePreferences(input.stateStore.getRuntimeState("codex_runtime_preferences"));
+
+  switch (parsed.name) {
+    case "help":
+      return {
+        handled: true,
+        responseText: formatSystemReply("control", [
+          "Available commands:",
+          "- /help - show this command list",
+          "- /pwd - show the current workspace directory",
+          "- /session - show the current Codex session mapping for this WeChat chat",
+          "- /newsession - clear the mapped Codex session so the next normal message starts a new one",
+          "- /use-session <id> - bind this WeChat chat to a specific Codex session id",
+          "- /quota - show the current Codex rate-limit snapshot",
+          "- /skills - show the currently installed local and plugin skills",
+          "- /stop - interrupt the current Codex task for this chat",
+          "- /append <text> - steer the current in-flight Codex task with more guidance",
+          "- /pending - show the current backlog review summary for this chat",
+          "- /pending continue - release pending backlog messages to Codex",
+          "- /pending clear - discard pending backlog messages for this chat",
+          "- /model [id|default] - show or override the bridge model for new turns",
+          "- /effort [minimal|low|medium|high|xhigh|default] - show or override the bridge reasoning effort",
+          "- /final [on|off|default] - show or override whether the final full summary is sent",
+          "- /status - show the current bridge status for this chat",
+          "- /diagnostics [n] - show the most recent diagnostic events",
+          "- /threads - show this chat mapping and recent conversation mappings",
+          "- /sessions [n] - list recent Codex app-server sessions you can bind with /use-session",
+          "- /ls [path] - list files in the current workspace or a relative subdirectory",
+        ].join("\n")),
+      };
+    case "pwd":
+    case "cwd":
+      return {
+        handled: true,
+        responseText: formatSystemReply("control", `workspace: ${input.conversation.runnerCwd ?? input.workspaceDir}`),
+      };
+    case "session":
+      return {
+        handled: true,
+        responseText: formatSystemReply("config", formatSession(input.conversation)),
+      };
+    case "newsession":
+    case "newthread":
+      input.stateStore.clearConversationThread(input.conversation.conversationKey);
+      return {
+        handled: true,
+        responseText: formatSystemReply("config", "Cleared the current session mapping. The next normal message will start a new Codex session."),
+      };
+    case "use-session": {
+      const threadId = parsed.args[0];
+      if (!threadId) {
+        return {
+          handled: true,
+          responseText: formatSystemReply("warning", "Usage: /use-session <session-id>"),
+        };
+      }
+      return {
+        handled: true,
+        responseText: formatSystemReply("config", `Switching this chat to session ${threadId}. Verifying the target workspace first.`),
+        action: { type: "use_session", threadId },
+      };
+    }
+    case "quota":
+      return {
+        handled: true,
+        responseText: formatSystemReply("status", "Reading the current Codex quota snapshot."),
+        action: { type: "quota_read" },
+      };
+    case "stop":
+      return {
+        handled: true,
+        responseText: formatSystemReply("control", "Checking for an active task to stop for this chat."),
+        action: { type: "stop" },
+      };
+    case "append": {
+      const guidance = parsed.args.join(" ").trim();
+      if (!guidance) {
+        return {
+          handled: true,
+          responseText: formatSystemReply("warning", "Usage: /append <additional guidance>"),
+        };
+      }
+      if (input.activeTask && !input.activeTask.supportsAppend) {
+        return {
+          handled: true,
+          responseText: formatSystemReply("warning", `The current task is running on ${input.activeTask.runnerBackend ?? "an unsupported backend"}, so /append may be unavailable. If this keeps failing, use /stop and send a new message instead.`),
+        };
+      }
+      return {
+        handled: true,
+        responseText: formatSystemReply("control", "Trying to append your guidance to the current task."),
+        action: { type: "append", guidance },
+      };
+    }
+    case "pending": {
+      const subcommand = parsed.args[0]?.toLowerCase();
+      if (!subcommand) {
+        return {
+          handled: true,
+          responseText: formatSystemReply("status", formatPendingReview(input.pendingReview)),
+        };
+      }
+      if (subcommand === "continue") {
+        return {
+          handled: true,
+          responseText: formatSystemReply("control", "Confirmed. Releasing the pending backlog for this chat."),
+          action: { type: "pending_continue" },
+        };
+      }
+      if (subcommand === "clear") {
+        return {
+          handled: true,
+          responseText: formatSystemReply("warning", "Confirmed. Clearing the pending backlog for this chat."),
+          action: { type: "pending_clear" },
+        };
+      }
+      return {
+        handled: true,
+        responseText: formatSystemReply("warning", "Usage: /pending [continue|clear]"),
+      };
+    }
+    case "model": {
+      const value = parsed.args.join(" ").trim();
+      if (!value) {
+        const effectiveModel = resolveEffectiveModel({
+          runtimePreferences,
+          defaultModel: input.defaultModel,
+          availableModels: input.availableModels,
+        });
+        return {
+          handled: true,
+          responseText: formatSystemReply("config", formatModelStatus({
+            effectiveModel,
+            availableModels: input.availableModels,
+          })),
+        };
+      }
+      if (value.toLowerCase() === "default") {
+        const next = { ...runtimePreferences };
+        delete next.model;
+        saveRuntimePreferences(input.stateStore, next);
+        return {
+          handled: true,
+          responseText: formatSystemReply("config", `Cleared the model override. New turns will use ${input.defaultModel ?? "the default model"}.`),
+        };
+      }
+      saveRuntimePreferences(input.stateStore, {
+        ...runtimePreferences,
+        model: value,
+      });
+      return {
+        handled: true,
+        responseText: formatSystemReply("config", `Set the bridge model to ${value}. New turns will use it.`),
+      };
+    }
+    case "effort": {
+      const value = parsed.args[0]?.trim().toLowerCase();
+      if (!value) {
+        const effectiveModel = resolveEffectiveModel({
+          runtimePreferences,
+          defaultModel: input.defaultModel,
+          availableModels: input.availableModels,
+        });
+        const effectiveEffort = resolveEffectiveReasoningEffort({
+          runtimePreferences,
+          defaultReasoningEffort: input.defaultReasoningEffort,
+          availableModels: input.availableModels,
+          effectiveModel,
+        });
+        return {
+          handled: true,
+          responseText: formatSystemReply("config", formatEffortStatus({
+            effectiveModel,
+            effectiveEffort,
+            availableModels: input.availableModels,
+          })),
+        };
+      }
+      if (value === "default") {
+        const next = { ...runtimePreferences };
+        delete next.reasoningEffort;
+        saveRuntimePreferences(input.stateStore, next);
+        return {
+          handled: true,
+          responseText: formatSystemReply("config", `Cleared the reasoning effort override. New turns will use ${input.defaultReasoningEffort ?? "the default effort"}.`),
+        };
+      }
+      if (!isReasoningEffort(value)) {
+        return {
+          handled: true,
+          responseText: formatSystemReply("warning", "Usage: /effort [minimal|low|medium|high|xhigh|default]"),
+        };
+      }
+      saveRuntimePreferences(input.stateStore, {
+        ...runtimePreferences,
+        reasoningEffort: value,
+      });
+      return {
+        handled: true,
+        responseText: formatSystemReply("config", `Set the bridge reasoning effort to ${value}. New turns will use it.`),
+      };
+    }
+    case "final": {
+      const value = parsed.args[0]?.trim().toLowerCase();
+      if (!value) {
+        return {
+          handled: true,
+          responseText: formatSystemReply("config", formatFinalSummaryStatus(runtimePreferences)),
+        };
+      }
+      if (value === "default") {
+        const next = { ...runtimePreferences };
+        delete next.showFinalSummary;
+        saveRuntimePreferences(input.stateStore, next);
+        return {
+          handled: true,
+          responseText: formatSystemReply("config", "Cleared the final summary override. New turns will use the default final summary behavior."),
+        };
+      }
+      if (value === "on" || value === "off") {
+        saveRuntimePreferences(input.stateStore, {
+          ...runtimePreferences,
+          showFinalSummary: value === "on",
+        });
+        return {
+          handled: true,
+          responseText: formatSystemReply("config", `${value === "on" ? "Enabled" : "Disabled"} the final full summary for new turns.`),
+        };
+      }
+      return {
+        handled: true,
+        responseText: formatSystemReply("warning", "Usage: /final [on|off|default]"),
+      };
+    }
+    case "skills":
+      return {
+        handled: true,
+        responseText: formatSystemReply("control", formatInstalledSkills(input.installedSkills)),
+      };
+    case "status":
+      return {
+        handled: true,
+        responseText: formatSystemReply("status", formatStatus({
+          workspaceDir: input.workspaceDir,
+          conversation: input.conversation,
+          accounts: input.stateStore.listAccounts(),
+          pendingMessages: input.stateStore.listPendingMessages(["pending"]),
+          diagnostics: input.stateStore.listDiagnostics(20),
+        })),
+      };
+    case "diagnostics":
+      return {
+        handled: true,
+        responseText: formatSystemReply("status", formatDiagnostics(input.stateStore.listDiagnostics(parseLimitArg(parsed.args[0], 5, 20)))),
+      };
+    case "threads":
+      return {
+        handled: true,
+        responseText: formatSystemReply("control", formatThreads({
+          currentConversation: input.conversation,
+          conversations: input.stateStore.listConversations(),
+        })),
+      };
+    case "sessions":
+      return {
+        handled: true,
+        responseText: formatSystemReply("control", formatAvailableSessions(input.availableSessions, parseLimitArg(parsed.args[0], 5, 20))),
+      };
+    case "ls":
+      return {
+        handled: true,
+        responseText: formatSystemReply("control", formatWorkspaceListing({
+          workspaceDir: input.workspaceDir,
+          relativePath: parsed.args[0],
+        })),
+      };
+    default:
+      return {
+        handled: true,
+        responseText: formatSystemReply("warning", `Unknown command: /${parsed.name}\nUse /help to see available commands.`),
+      };
+  }
+}
+
+function formatSystemReply(category: SystemMessageCategory, text: string): string {
+  const emoji = systemMessageEmoji(category);
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return `${emoji}`;
+  }
+  const [firstLine, ...rest] = trimmed.split("\n");
+  return [`${emoji} ${firstLine}`, ...rest].join("\n");
+}
+
+function systemMessageEmoji(category: SystemMessageCategory): string {
+  switch (category) {
+    case "control":
+      return "🛠️";
+    case "status":
+      return "📡";
+    case "config":
+      return "⚙️";
+    case "success":
+      return "✅";
+    case "warning":
+      return "⚠️";
+  }
+}
+
+function formatInstalledSkills(value?: InstalledSkillsCatalog): string {
+  const local = value?.local ?? [];
+  const plugin = value?.plugin ?? [];
+  return [
+    "local skills:",
+    ...formatSkillLines(local),
+    "",
+    "plugin skills:",
+    ...formatSkillLines(plugin),
+  ].join("\n");
+}
+
+function formatSkillLines(names: string[]): string[] {
+  if (names.length === 0) {
+    return ["- none"];
+  }
+  return names.map((name) => `- ${name}`);
+}
+
+function formatStatus(input: {
+  workspaceDir: string;
+  conversation: ConversationRecord;
+  accounts: AccountRecord[];
+  pendingMessages: PendingMessageRecord[];
+  diagnostics: DiagnosticEvent[];
+}): string {
+  const activeAccounts = input.accounts.filter((account) => account.loginState === "active");
+  const lastReplyTiming = input.diagnostics.find((event) => event.code === "reply_timing");
+  const lastReplyFailure = input.diagnostics.find((event) => event.code === "reply_failed");
+  return [
+    `workspace: ${input.workspaceDir}`,
+    `accounts: ${input.accounts.length} total / ${activeAccounts.length} active`,
+    `pending messages: ${input.pendingMessages.length}`,
+    `current backend: ${input.conversation.runnerBackend ?? "none"}`,
+    `current session: ${input.conversation.runnerThreadId ?? input.conversation.codexThreadId ?? "none"}`,
+    `last reply_timing: ${formatReplyTiming(lastReplyTiming)}`,
+    `last reply_failed: ${lastReplyFailure ? shorten(lastReplyFailure.detail, 80) : "none"}`,
+  ].join("\n");
+}
+
+function formatDiagnostics(diagnostics: DiagnosticEvent[]): string {
+  if (diagnostics.length === 0) {
+    return "recent diagnostics:\n- none";
+  }
+  return [
+    "recent diagnostics:",
+    ...diagnostics.map((event) => `- [${event.createdAt}] ${event.code}${event.detail ? ` :: ${shorten(event.detail, 120)}` : ""}`),
+  ].join("\n");
+}
+
+function formatThreads(input: {
+  currentConversation: ConversationRecord;
+  conversations: ConversationRecord[];
+}): string {
+  const recent = input.conversations
+    .filter((conversation) => conversation.conversationKey !== input.currentConversation.conversationKey)
+    .slice(0, 5);
+  return [
+    "current conversation:",
+    `- ${formatConversationSummary(input.currentConversation)}`,
+    "",
+    "recent conversations:",
+    ...(recent.length > 0 ? recent.map((conversation) => `- ${formatConversationSummary(conversation)}`) : ["- none"]),
+  ].join("\n");
+}
+
+function formatConversationSummary(conversation: ConversationRecord): string {
+  return `${conversation.conversationKey} | ${conversation.runnerBackend ?? "none"} | ${conversation.runnerThreadId ?? conversation.codexThreadId ?? "none"} | ${conversation.runnerCwd ?? "workspace: unknown"}`;
+}
+
+function formatAvailableSessions(sessions: AppServerThreadSummary[] | undefined, limit: number): string {
+  const visible = (sessions ?? []).slice(0, limit);
+  return [
+    "available sessions:",
+    ...(visible.length > 0
+      ? visible.map((session) => {
+          const parts = [
+            session.id,
+            session.name ?? "unnamed",
+            session.sourceKind ?? "unknown",
+            `workspace: ${shortenMiddle(session.cwd ?? "unknown", 48)}`,
+          ];
+          if (session.preview?.trim()) {
+            parts.push(shortenMiddle(session.preview.trim(), 64));
+          }
+          return `- ${parts.join(" | ")}`.trimEnd();
+        })
+      : ["- none"]),
+  ].join("\n");
+}
+
+function formatWorkspaceListing(input: {
+  workspaceDir: string;
+  relativePath: string | undefined;
+}): string {
+  const targetDir = resolveWorkspacePath(input.workspaceDir, input.relativePath);
+  if (!targetDir) {
+    return "Usage: /ls [relative-path-inside-workspace]";
+  }
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(targetDir, { withFileTypes: true });
+  } catch (error) {
+    return `Unable to list ${targetDir}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  const lines = entries
+    .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
+    .slice(0, 20)
+    .map((entry) => `- ${entry.name}${entry.isDirectory() ? "/" : ""}`);
+  return [
+    `path: ${targetDir}`,
+    ...(lines.length > 0 ? lines : ["- empty"]),
+    ...(entries.length > 20 ? [`- ... ${entries.length - 20} more`] : []),
+  ].join("\n");
+}
+
+function resolveWorkspacePath(workspaceDir: string, relativePath?: string): string | undefined {
+  if (!relativePath) {
+    return workspaceDir;
+  }
+  if (path.isAbsolute(relativePath)) {
+    return undefined;
+  }
+  const resolved = path.resolve(workspaceDir, relativePath);
+  const relative = path.relative(workspaceDir, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return undefined;
+  }
+  return resolved;
+}
+
+function formatSession(conversation: ConversationRecord): string {
+  const backend = conversation.runnerBackend ?? "none";
+  const threadId = conversation.runnerThreadId ?? conversation.codexThreadId ?? "none";
+  return [
+    `conversation: ${conversation.conversationKey}`,
+    `backend: ${backend}`,
+    `session: ${threadId}`,
+    `workspace: ${conversation.runnerCwd ?? "unknown"}`,
+  ].join("\n");
+}
+
+function formatReplyTiming(event?: DiagnosticEvent): string {
+  if (!event?.detail) {
+    return "none";
+  }
+  try {
+    const parsed = JSON.parse(event.detail) as { runnerBackend?: string; totalMs?: number };
+    if (parsed.totalMs) {
+      return `${parsed.runnerBackend ?? "unknown"} / ${parsed.totalMs} ms`;
+    }
+  } catch {
+    // fall through
+  }
+  return shorten(event.detail, 80);
+}
+
+function formatModelStatus(input: {
+  effectiveModel?: string | undefined;
+  availableModels?: AppServerModelSummary[] | undefined;
+}): string {
+  const lines = [
+    `current model: ${input.effectiveModel ?? "unknown"}`,
+  ];
+  if (input.availableModels?.length) {
+    lines.push("available models:");
+    lines.push(...input.availableModels.map((model) => {
+      const tags: string[] = [];
+      if (model.isDefault) {
+        tags.push("default");
+      }
+      if (model.defaultReasoningEffort) {
+        tags.push(`default effort ${model.defaultReasoningEffort}`);
+      }
+      if (model.supportedReasoningEfforts.length > 0) {
+        tags.push(`efforts: ${model.supportedReasoningEfforts.join(", ")}`);
+      }
+      return `- ${model.id}${tags.length > 0 ? ` (${tags.join("; ")})` : ""}`;
+    }));
+  }
+  return lines.join("\n");
+}
+
+function formatEffortStatus(input: {
+  effectiveModel?: string | undefined;
+  effectiveEffort?: ReasoningEffort | undefined;
+  availableModels?: AppServerModelSummary[] | undefined;
+}): string {
+  const lines = [
+    `current reasoning effort: ${input.effectiveEffort ?? "unknown"}`,
+  ];
+  const selectedModel = input.availableModels?.find((model) => model.id === input.effectiveModel)
+    ?? input.availableModels?.find((model) => model.isDefault);
+  if (selectedModel?.supportedReasoningEfforts.length) {
+    lines.push(`available efforts for ${selectedModel.id}: ${selectedModel.supportedReasoningEfforts.join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
+function resolveEffectiveModel(input: {
+  runtimePreferences: RuntimePreferences;
+  defaultModel?: string | undefined;
+  availableModels?: AppServerModelSummary[] | undefined;
+}): string | undefined {
+  return input.runtimePreferences.model
+    ?? input.defaultModel
+    ?? input.availableModels?.find((model) => model.isDefault)?.id
+    ?? input.availableModels?.[0]?.id;
+}
+
+function resolveEffectiveReasoningEffort(input: {
+  runtimePreferences: RuntimePreferences;
+  defaultReasoningEffort?: ReasoningEffort | undefined;
+  availableModels?: AppServerModelSummary[] | undefined;
+  effectiveModel?: string | undefined;
+}): ReasoningEffort | undefined {
+  if (input.runtimePreferences.reasoningEffort) {
+    return input.runtimePreferences.reasoningEffort;
+  }
+  if (input.defaultReasoningEffort) {
+    return input.defaultReasoningEffort;
+  }
+  const selectedModel = input.availableModels?.find((model) => model.id === input.effectiveModel)
+    ?? input.availableModels?.find((model) => model.isDefault);
+  return selectedModel?.defaultReasoningEffort ?? selectedModel?.supportedReasoningEfforts[0];
+}
+
+function parseLimitArg(value: string | undefined, defaultValue: number, maxValue: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return defaultValue;
+  }
+  return Math.min(Math.trunc(parsed), maxValue);
+}
+
+function shorten(value: string | undefined, maxLength: number): string {
+  if (!value) {
+    return "";
+  }
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function shortenMiddle(value: string | undefined, maxLength: number): string {
+  if (!value) {
+    return "";
+  }
+  if (value.length <= maxLength) {
+    return value;
+  }
+  const head = Math.max(1, Math.floor((maxLength - 6) / 2));
+  const tail = Math.max(1, maxLength - 6 - head);
+  return `${value.slice(0, head)} ... ... ${value.slice(value.length - tail)}`;
+}
+
+function formatQuota(value: unknown): string {
+  if (!isObject(value)) {
+    return "No Codex quota snapshot is available yet.";
+  }
+
+  const primary = isObject(value.primary) ? value.primary : undefined;
+  const secondary = isObject(value.secondary) ? value.secondary : undefined;
+  const credits = isObject(value.credits) ? value.credits : undefined;
+  const lines = ["current quota:"];
+
+  if (primary) {
+    lines.push(`primary: ${primary.usedPercent ?? "?"}% used / ${primary.windowDurationMins ?? "?"} min window / resets ${formatReset(primary.resetsAt)}`);
+  }
+  if (secondary) {
+    lines.push(`secondary: ${secondary.usedPercent ?? "?"}% used / ${secondary.windowDurationMins ?? "?"} min window / resets ${formatReset(secondary.resetsAt)}`);
+  }
+  if (credits) {
+    lines.push(`credits: hasCredits=${String(credits.hasCredits)} unlimited=${String(credits.unlimited)} balance=${credits.balance ?? "n/a"}`);
+  }
+
+  return lines.join("\n");
+}
+
+function formatPendingReview(value?: PendingReviewSummary): string {
+  if (!value || value.count === 0) {
+    return "No pending backlog review is waiting for this chat.";
+  }
+  return [
+    `pending backlog: ${value.count} message(s)`,
+    ...value.items.map((item, index) => `- ${index + 1}. ${item}`),
+    "",
+    "Use /pending continue to process them or /pending clear to discard them.",
+  ].join("\n");
+}
+
+function formatReset(value: unknown): string {
+  return typeof value === "number" ? new Date(value * 1000).toISOString() : "unknown";
+}
+
+function formatFinalSummaryStatus(runtimePreferences: RuntimePreferences): string {
+  return `final summary: ${runtimePreferences.showFinalSummary === false ? "off" : "on"}`;
+}
+
+function isObject(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null;
+}
+
+function readRuntimePreferences(value: unknown): RuntimePreferences {
+  if (!isObject(value)) {
+    return {};
+  }
+  const preferences: RuntimePreferences = {};
+  if (typeof value.model === "string" && value.model.trim()) {
+    preferences.model = value.model.trim();
+  }
+  if (isReasoningEffort(value.reasoningEffort)) {
+    preferences.reasoningEffort = value.reasoningEffort;
+  }
+  if (typeof value.showFinalSummary === "boolean") {
+    preferences.showFinalSummary = value.showFinalSummary;
+  }
+  return preferences;
+}
+
+function saveRuntimePreferences(stateStore: ControlCommandStore, value: RuntimePreferences): void {
+  stateStore.saveRuntimeState("codex_runtime_preferences", sanitizeRuntimePreferences(value));
+}
+
+function sanitizeRuntimePreferences(value: RuntimePreferences): RuntimePreferences {
+  const sanitized: RuntimePreferences = {};
+  if (value.model?.trim()) {
+    sanitized.model = value.model.trim();
+  }
+  if (value.reasoningEffort) {
+    sanitized.reasoningEffort = value.reasoningEffort;
+  }
+  if (typeof value.showFinalSummary === "boolean") {
+    sanitized.showFinalSummary = value.showFinalSummary;
+  }
+  return sanitized;
+}
+
+function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh";
+}

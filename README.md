@@ -104,7 +104,7 @@ After installation, restart Codex Desktop so the local marketplace is reloaded.
 
 ## Windows Tray And Shortcut
 
-Install the Windows tray launcher and desktop shortcut:
+If a Windows tray entrypoint is desired, install the optional tray launcher and desktop shortcut:
 
 ```powershell
 npm run install:tray
@@ -117,7 +117,7 @@ This generates:
 
 The generated `WeChat Bridge` shortcut launches the **installed plugin runtime** under `~/.codex/plugins/codex-wechat-bridge`, which is the intended usage model for Codex Desktop.
 
-The tray is intended to be the normal operator entrypoint on Windows:
+The tray is an optional Windows operator entrypoint:
 - start / stop / restart daemon
 - inspect status
 - keep the bridge available without an open terminal window

@@ -41,6 +41,8 @@ Restart Codex Desktop after this step.
 
 ## 3. Install the Tray and Desktop Shortcut
 
+Optional on Windows:
+
 ```powershell
 npm run install:tray
 ```
@@ -51,7 +53,7 @@ This creates:
 
 ## 4. Start the Runtime
 
-Recommended:
+Optional convenience path:
 - double-click the `WeChat Bridge` desktop shortcut
 
 Manual alternative:

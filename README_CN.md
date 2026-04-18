@@ -220,6 +220,7 @@ npm run typecheck
 - `/use-session <id>` - 将当前微信聊天绑定到指定 Codex session。
 - `/test-session` - 立刻切换到已配置的共享测试 session。
 - `/test-session bind <id>` - 绑定或重新绑定共享测试 session id。
+- `/test-session quit` - 退出共享测试 session 并切回最近一次记录的非测试 session。
 - `/test-session unbind` - 清除共享测试 session 绑定。
 - `/append <text>` - 在支持的情况下向当前运行任务追加引导文本。
 - `/stop` - 停止当前聊天正在运行的任务。
@@ -255,7 +256,8 @@ npm run typecheck
 - [`src/cli/mcp-server.ts`](./src/cli/mcp-server.ts)：MCP server 入口
 - [`scripts/install-codex-plugin.ps1`](./scripts/install-codex-plugin.ps1)：本地 Codex plugin 安装脚本
 - [`scripts/install-tray-launcher.ps1`](./scripts/install-tray-launcher.ps1)：tray + 桌面快捷方式安装脚本
-- [`skills/wechat-bridge-ops/SKILL.md`](./skills/wechat-bridge-ops/SKILL.md)：内置操作技能
+- [`skills/wechat-bridge-ops/SKILL.md`](./skills/wechat-bridge-ops/SKILL.md)：内置运维技能 (`codex-wechat-bridge:ops`)
+- [`skills/task-finished-notifier/SKILL.md`](./skills/task-finished-notifier/SKILL.md)：内置任务完成通知技能 (`codex-wechat-bridge:task-finished-notifier`)
 - [`docs/human-guide.md`](./docs/human-guide.md)：面向操作用户的文档
 - [`docs/codex-agent-guide.md`](./docs/codex-agent-guide.md)：面向 Codex agent 的文档
 - [`docs/architecture.md`](./docs/architecture.md)：架构说明

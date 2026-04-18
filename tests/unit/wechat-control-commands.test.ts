@@ -144,6 +144,7 @@ describe("wechat control commands", () => {
     expect(result.responseText).toContain("\n- /pwd");
     expect(result.responseText).toContain("\n- /new-session [name]");
     expect(result.responseText).toContain("\n- /test-session");
+    expect(result.responseText).toContain("\n- /test-session quit");
     expect(result.responseText).toContain("\n- /quota");
     expect(result.responseText).toContain("\n- /skills");
     expect(result.responseText).toContain("\n- /stop");
@@ -561,10 +562,54 @@ describe("wechat control commands", () => {
 
     expect(bindResult.responseText).toContain("Bound /test-session");
     expect(useResult.responseText).toContain("Switching this chat to the configured test session");
-    expect(useResult.action).toEqual({ type: "use_session", threadId: "thread-test-1" });
+    expect(useResult.action).toEqual({ type: "use_session", threadId: "thread-test-1", afterSwitch: "remember_non_test" });
     expect(unbindResult.responseText).toContain("Cleared the configured /test-session binding");
     expect(store.runtime.get("test_session_binding")).toBeNull();
     expect(missingResult.responseText).toContain("Use /test-session bind <session-id>");
+  });
+
+  test("quits the shared test session back to the latest non-test session", () => {
+    const store = new FakeStore();
+    store.runtime.set("test_session_binding", { threadId: "thread-test-1" });
+    store.runtime.set("test_session_return:acct-1:user-a", "thread-app-2");
+
+    const quitResult = handleWechatControlCommand({
+      text: "/test-session quit",
+      stateStore: store,
+      conversation: makeConversation({
+        runnerBackend: "app_server",
+        runnerThreadId: "thread-test-1",
+      }),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+
+    expect(quitResult.responseText).toContain("Leaving the shared test session");
+    expect(quitResult.action).toEqual({
+      type: "use_session",
+      threadId: "thread-app-2",
+      afterSwitch: "clear_test_return",
+    });
+  });
+
+  test("warns when /test-session quit is used outside the shared test session", () => {
+    const store = new FakeStore();
+    store.runtime.set("test_session_binding", { threadId: "thread-test-1" });
+    store.runtime.set("test_session_return:acct-1:user-a", "thread-app-2");
+
+    const result = handleWechatControlCommand({
+      text: "/test-session quit",
+      stateStore: store,
+      conversation: makeConversation({
+        runnerBackend: "app_server",
+        runnerThreadId: "thread-app-2",
+      }),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+
+    expect(result.responseText).toContain("not currently on the shared test session");
+    expect(result.action).toBeUndefined();
   });
 
   test("returns a live quota action", () => {

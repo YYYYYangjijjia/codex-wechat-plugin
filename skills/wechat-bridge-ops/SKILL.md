@@ -1,26 +1,26 @@
----
-name: "wechat-bridge-ops"
-description: "Use when operating, diagnosing, or manually intervening in the local Codex Desktop + WeChat bridge through its MCP tools, especially for login, session mapping, pending messages, and failed WeChat deliveries."
+﻿---
+name: "codex-wechat-bridge:ops"
+description: "Use when operating, diagnosing, or manually intervening in the local Codex Desktop + WeChat / Weixin bridge through its MCP tools, especially for login, session mapping, pending messages, and failed deliveries."
 ---
 
-# WeChat Bridge Ops
+# Ops
 
 ![WeChat Bridge Icon](./assets/icon.png)
 
-Use this skill when working with the local WeChat bridge plugin in the current repository root.
+Use this skill when working with the local WeChat / Weixin bridge plugin in the current repository root or the installed plugin runtime.
 
 ## Purpose
 
-- Inspect WeChat bridge state without touching OpenClaw.
-- Confirm which WeChat conversation maps to which Codex thread.
+- Inspect bridge state without touching OpenClaw.
+- Confirm which WeChat / Weixin conversation maps to which Codex thread.
 - Recover from login expiry, failed replies, or ambiguous pending messages.
 
 ## Runtime model
 
 - The always-on runtime is the local daemon, not the plugin bundle.
 - The plugin bundle is the Codex-side control plane.
-- The MCP server exposes manual tools for login, diagnostics, inspection, and manual send operations.
-- The daemon already performs the autonomous `private message -> Codex -> final WeChat reply` loop.
+- The MCP server exposes manual tools for login, diagnostics, inspection, and manual WeChat replies.
+- The daemon already performs the autonomous `private message -> Codex -> final WeChat / Weixin reply` loop.
 
 ## Safety rules
 

@@ -13,6 +13,7 @@ import { runTurnWithFallback } from "../codex/fallback-codex-runner.js";
 import {
   handleWechatControlCommand,
   NEXT_NEW_SESSION_NAME_PREFIX,
+  TEST_SESSION_RETURN_PREFIX,
   parseWechatControlCommand,
 } from "../commands/wechat-control-commands.js";
 import type { ConversationRecord, PendingMessageRecord, StateStore } from "../state/sqlite-state-store.js";
@@ -730,7 +731,7 @@ export class BridgeService {
 
   private async executeCommandAction(input: {
     conversation: ConversationRecord;
-    result: { action?: { type: "stop" } | { type: "append"; guidance: string } | { type: "use_session"; threadId: string } | { type: "quota_read" } | { type: "pending_continue" } | { type: "pending_clear" } | undefined; responseText?: string | undefined };
+    result: { action?: { type: "stop" } | { type: "append"; guidance: string } | { type: "use_session"; threadId: string; afterSwitch?: "remember_non_test" | "clear_test_return" } | { type: "quota_read" } | { type: "pending_continue" } | { type: "pending_clear" } | undefined; responseText?: string | undefined };
     accountId: string;
   }): Promise<string | undefined> {
     if (!input.result.action) {
@@ -776,6 +777,15 @@ export class BridgeService {
           runnerThreadId: thread.id,
           runnerCwd: thread.cwd,
         });
+        if (input.result.action.afterSwitch === "remember_non_test") {
+          const previousThreadId = input.conversation.runnerThreadId ?? input.conversation.codexThreadId ?? undefined;
+          if (previousThreadId && previousThreadId !== thread.id) {
+            this.stateStore.saveRuntimeState(`${TEST_SESSION_RETURN_PREFIX}${input.conversation.conversationKey}`, previousThreadId);
+          }
+        }
+        if (input.result.action.afterSwitch === "clear_test_return") {
+          this.stateStore.saveRuntimeState(`${TEST_SESSION_RETURN_PREFIX}${input.conversation.conversationKey}`, null);
+        }
         return [
           `Switched this chat to session ${thread.id}.`,
           `workspace: ${thread.cwd ?? "unknown"}`,

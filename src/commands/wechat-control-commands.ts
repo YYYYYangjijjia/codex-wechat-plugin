@@ -40,7 +40,7 @@ type TestSessionBinding = {
 type CommandAction =
   | { type: "stop" }
   | { type: "append"; guidance: string }
-  | { type: "use_session"; threadId: string }
+  | { type: "use_session"; threadId: string; afterSwitch?: "remember_non_test" | "clear_test_return" }
   | { type: "quota_read" }
   | { type: "pending_continue" }
   | { type: "pending_clear" };
@@ -54,6 +54,7 @@ type SystemMessageCategory = "control" | "status" | "config" | "success" | "warn
 
 export const TEST_SESSION_BINDING_KEY = "test_session_binding";
 export const NEXT_NEW_SESSION_NAME_PREFIX = "next_new_session_name:";
+export const TEST_SESSION_RETURN_PREFIX = "test_session_return:";
 
 export function parseWechatControlCommand(text: string): ParsedCommand | undefined {
   const trimmed = text.trim();
@@ -110,6 +111,7 @@ export function handleWechatControlCommand(input: {
           "- /use-session <id> - bind this WeChat chat to a specific Codex session id",
           "- /test-session - switch this chat to the configured shared test session",
           "- /test-session bind <id> - bind the shared test session id",
+          "- /test-session quit - leave the shared test session and return to the latest non-test session",
           "- /test-session unbind - clear the shared test session id",
           "- /quota - show the current Codex rate-limit snapshot",
           "- /skills - show the currently installed local and plugin skills",
@@ -172,18 +174,22 @@ export function handleWechatControlCommand(input: {
     }
     case "test-session": {
       const subcommand = parsed.args[0]?.toLowerCase();
+      const binding = readTestSessionBinding(input.stateStore.getRuntimeState(TEST_SESSION_BINDING_KEY));
       if (!subcommand) {
-        const binding = readTestSessionBinding(input.stateStore.getRuntimeState(TEST_SESSION_BINDING_KEY));
         if (!binding?.threadId) {
           return {
             handled: true,
             responseText: formatSystemReply("warning", "No shared /test-session is configured yet. Use /test-session bind <session-id> first."),
           };
         }
+        const currentThreadId = input.conversation.runnerThreadId ?? input.conversation.codexThreadId ?? undefined;
+        if (currentThreadId && currentThreadId !== binding.threadId) {
+          saveTestSessionReturnThread(input.stateStore, input.conversation.conversationKey, currentThreadId);
+        }
         return {
           handled: true,
           responseText: formatSystemReply("config", `Switching this chat to the configured test session ${binding.threadId}.`),
-          action: { type: "use_session", threadId: binding.threadId },
+          action: { type: "use_session", threadId: binding.threadId, afterSwitch: "remember_non_test" },
         };
       }
       if (subcommand === "bind") {
@@ -200,6 +206,33 @@ export function handleWechatControlCommand(input: {
           responseText: formatSystemReply("config", `Bound /test-session to ${threadId}.`),
         };
       }
+      if (subcommand === "quit") {
+        if (!binding?.threadId) {
+          return {
+            handled: true,
+            responseText: formatSystemReply("warning", "No shared /test-session is configured yet. Use /test-session bind <session-id> first."),
+          };
+        }
+        const currentThreadId = input.conversation.runnerThreadId ?? input.conversation.codexThreadId ?? undefined;
+        if (!currentThreadId || currentThreadId !== binding.threadId) {
+          return {
+            handled: true,
+            responseText: formatSystemReply("warning", "This chat is not currently on the shared test session. Switch with /test-session first."),
+          };
+        }
+        const returnThreadId = readTestSessionReturnThread(input.stateStore, input.conversation.conversationKey);
+        if (!returnThreadId) {
+          return {
+            handled: true,
+            responseText: formatSystemReply("warning", "No previous non-test session is recorded for this chat yet."),
+          };
+        }
+        return {
+          handled: true,
+          responseText: formatSystemReply("config", `Leaving the shared test session and returning this chat to ${returnThreadId}.`),
+          action: { type: "use_session", threadId: returnThreadId, afterSwitch: "clear_test_return" },
+        };
+      }
       if (subcommand === "unbind") {
         input.stateStore.saveRuntimeState(TEST_SESSION_BINDING_KEY, null);
         return {
@@ -209,7 +242,7 @@ export function handleWechatControlCommand(input: {
       }
       return {
         handled: true,
-        responseText: formatSystemReply("warning", "Usage: /test-session [bind <session-id>|unbind]"),
+        responseText: formatSystemReply("warning", "Usage: /test-session [bind <session-id>|quit|unbind]"),
       };
     }
     case "quota":
@@ -802,6 +835,15 @@ function readTestSessionBinding(value: unknown): TestSessionBinding | undefined 
   return {
     threadId: value.threadId.trim(),
   };
+}
+
+function readTestSessionReturnThread(stateStore: ControlCommandStore, conversationKey: string): string | undefined {
+  const value = stateStore.getRuntimeState(`${TEST_SESSION_RETURN_PREFIX}${conversationKey}`);
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function saveTestSessionReturnThread(stateStore: ControlCommandStore, conversationKey: string, threadId: string | undefined): void {
+  stateStore.saveRuntimeState(`${TEST_SESSION_RETURN_PREFIX}${conversationKey}`, threadId?.trim() ? threadId.trim() : null);
 }
 
 function saveNextNewSessionName(stateStore: ControlCommandStore, conversationKey: string, value: string | undefined): void {

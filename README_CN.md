@@ -9,24 +9,24 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%2011-0078D6)](https://www.microsoft.com/windows)
 [![Runtime](https://img.shields.io/badge/runtime-Node%2022-339933)](https://nodejs.org/)
 [![Codex](https://img.shields.io/badge/Codex-Desktop-111111)](https://developers.openai.com/codex/plugins/build)
-[![WeChat](https://img.shields.io/badge/WeChat-private%20chat-07C160)](https://www.wechat.com/)
+[![WeChat / Weixin](https://img.shields.io/badge/WeChat%20%2F%20Weixin-private%20chat-07C160)](https://www.wechat.com/)
 [![Tray](https://img.shields.io/badge/UI-Windows%20tray-4B5563)](#windows-tray-and-shortcut)
 [![Launcher](https://img.shields.io/badge/Launch-desktop%20shortcut-2563EB)](#windows-tray-and-shortcut)
 
-这是一个 **Windows-first** 的本地桥接项目，用于把 **微信私聊**接入 **Codex Desktop**。运行形态由本地 daemon、本地 MCP server、Codex plugin bundle 组成。
+这是一个 **Windows-first** 的本地桥接项目，用于把 **微信（WeChat / Weixin）私聊**接入 **Codex Desktop**。运行形态由本地 daemon、本地 MCP server、Codex plugin bundle 组成。
 
 这个仓库是以下内容的源码主仓：
-- WeChat bridge daemon
+- WeChat / Weixin bridge daemon
 - 本地 MCP server
 - Codex plugin bundle
 - Windows 托盘程序与桌面快捷方式
 
 安装并登录后，这个桥接可以：
-- 接收微信私聊消息
+- 接收微信（WeChat / Weixin）私聊消息
 - 按联系人隔离并映射到各自的 Codex session
 - 将消息路由给 Codex 处理
-- 将回复回发到微信
-- 同时从微信端和 Codex 端暴露桥接控制能力
+- 将回复回发到微信（WeChat / Weixin）
+- 同时从微信（WeChat / Weixin）端和 Codex 端暴露桥接控制能力
 
 ## 适用人群
 
@@ -34,21 +34,21 @@
 
 - 高频个人 Codex 使用者
 - 在 Windows 上使用 Codex Desktop 的用户
-- 不想为了接入微信单独安装 OpenClaw 的用户
-- 偶尔需要通过手机端微信操控电脑上 Codex 的用户
-- 需要在微信桥接端检查和切换 Codex session 的用户
+- 不想为了接入微信 / Weixin 单独安装 OpenClaw 的用户
+- 偶尔需要通过手机端微信 / Weixin 操控电脑上 Codex 的用户
+- 需要在微信 / Weixin 桥接端检查和切换 Codex session 的用户
 
 推荐的使用模型是：
 - Codex 在桌面端运行
-- 微信作为远程私聊控制和回复界面
-- 桥接层负责把微信聊天绑定到带 session 感知的 Codex 工作流
+- 微信 / Weixin 作为远程私聊控制和回复界面
+- 桥接层负责把微信 / Weixin 聊天绑定到带 session 感知的 Codex 工作流
 
 ## 兼容性
 
 - **主要支持环境：**Windows 11
 - **Windows tray + desktop shortcut：**仅 Windows
 - **Core daemon / MCP runtime：**底层是 Node.js，理论上有一定可移植性，但当前打包、测试和文档都按 Windows-first 本地插件来组织
-- **微信范围：**当前 v1 仅支持私聊
+- **微信 / Weixin 范围：**当前 v1 仅支持私聊
 
 ## 功能
 

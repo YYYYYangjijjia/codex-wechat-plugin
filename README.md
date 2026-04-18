@@ -9,24 +9,24 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%2011-0078D6)](https://www.microsoft.com/windows)
 [![Runtime](https://img.shields.io/badge/runtime-Node%2022-339933)](https://nodejs.org/)
 [![Codex](https://img.shields.io/badge/Codex-Desktop-111111)](https://developers.openai.com/codex/plugins/build)
-[![WeChat](https://img.shields.io/badge/WeChat-private%20chat-07C160)](https://www.wechat.com/)
+[![WeChat / Weixin](https://img.shields.io/badge/WeChat%20%2F%20Weixin-private%20chat-07C160)](https://www.wechat.com/)
 [![Tray](https://img.shields.io/badge/UI-Windows%20tray-4B5563)](#windows-tray-and-shortcut)
 [![Launcher](https://img.shields.io/badge/Launch-desktop%20shortcut-2563EB)](#windows-tray-and-shortcut)
 
-Windows-first local bridge that connects WeChat private chats to Codex Desktop through a local daemon, a local MCP server, and a Codex plugin bundle.
+Windows-first local bridge that connects WeChat / Weixin private chats to Codex Desktop through a local daemon, a local MCP server, and a Codex plugin bundle.
 
 This repository is the source of truth for:
-- the WeChat bridge daemon
+- the WeChat / Weixin bridge daemon
 - the local MCP server
 - the Codex plugin bundle
 - the Windows tray companion and desktop launcher
 
 Once installed and logged in, the bridge can:
-- receive private WeChat messages
+- receive private WeChat / Weixin messages
 - keep each contact isolated in its own mapped Codex session
 - route messages through Codex
-- send replies back to WeChat
-- expose bridge controls from both WeChat and Codex
+- send replies back to WeChat / Weixin
+- expose bridge controls from both WeChat / Weixin and Codex
 
 ## Who This Is For
 
@@ -34,21 +34,21 @@ This project is aimed at:
 
 - heavy personal Codex users
 - Codex Desktop users on Windows
-- users who want WeChat access to Codex without installing OpenClaw as a separate runtime
-- users who occasionally need to control the Codex session running on their computer from WeChat on their phone
-- users who need the WeChat bridge side to inspect and switch Codex sessions explicitly
+- users who want WeChat / Weixin access to Codex without installing OpenClaw as a separate runtime
+- users who occasionally need to control the Codex session running on their computer from WeChat / Weixin on their phone
+- users who need the WeChat / Weixin bridge side to inspect and switch Codex sessions explicitly
 
 The intended operating model is:
 - Codex runs on the desktop
-- WeChat acts as a remote private-chat control and reply surface
-- the bridge keeps the WeChat chat mapped to a session-aware Codex workflow
+- WeChat / Weixin acts as a remote private-chat control and reply surface
+- the bridge keeps the WeChat / Weixin chat mapped to a session-aware Codex workflow
 
 ## Compatibility
 
 - **Primary supported environment:** Windows 11
 - **Windows tray + desktop shortcut:** Windows-only
 - **Core daemon / MCP runtime:** Node.js-based and mostly portable in principle, but this repository is currently packaged, tested, and documented as a Windows-first local plugin
-- **WeChat scope:** private chats only in v1
+- **WeChat / Weixin scope:** private chats only in v1
 
 ## Features
 

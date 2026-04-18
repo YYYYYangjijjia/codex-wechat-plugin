@@ -39,7 +39,7 @@ $buildExePath = Join-Path $buildDir "WeChat Bridge Tray.exe"
 $exePath = Join-Path $outputDir "WeChat Bridge Tray.exe"
 $desktopDir = [Environment]::GetFolderPath("Desktop")
 $shortcutPath = Join-Path $desktopDir $ShortcutName
-$trayIconPath = (Resolve-Path (Join-Path $resolvedPluginRoot "assets\\tray\\codex_wechat_tray_round.ico")).Path
+$desktopIconPath = (Resolve-Path (Join-Path $resolvedPluginRoot "assets\\desktop\\codex_wechat_desktop_round.ico")).Path
 
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
@@ -49,7 +49,7 @@ $cscArguments = @(
   "/nologo",
   "/target:winexe",
   "/out:$buildExePath",
-  "/win32icon:$trayIconPath",
+  "/win32icon:$desktopIconPath",
   "/reference:System.dll",
   "/reference:System.Windows.Forms.dll",
   "/reference:System.Drawing.dll",
@@ -69,7 +69,11 @@ $shortcut = $wsh.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $exePath
 $shortcut.WorkingDirectory = $resolvedPluginRoot
 $shortcut.Description = "Launch the Codex WeChat Bridge tray"
-$shortcut.IconLocation = "$exePath,0"
+$shortcut.Save()
+
+# Persist the desktop-facing icon explicitly after the launcher target has been written.
+$shortcut = $wsh.CreateShortcut($shortcutPath)
+$shortcut.IconLocation = "$desktopIconPath,0"
 $shortcut.Save()
 
 Write-Host "Tray launcher executable: $exePath"

@@ -3,14 +3,18 @@ import path from "node:path";
 import { createReplyOrchestrator } from "./reply-orchestrator.js";
 import type { BridgeConfig } from "../config/app-config.js";
 import { ExecCodexRunner } from "../codex/exec-codex-runner.js";
-import { AppServerClient } from "../codex/app-server-client.js";
+import { AppServerClient, type AppServerThreadSummary } from "../codex/app-server-client.js";
 import { AppServerCodexRunner } from "../codex/app-server-codex-runner.js";
 import { AppServerProcessManager } from "../codex/app-server-process-manager.js";
 import { WebSocketAppServerTransport } from "../codex/app-server-websocket-transport.js";
 import { CodexTurnInterruptedError, type ActiveTurnControl, type CodexRunner, type ReasoningEffort, type RunnerBackend } from "../codex/codex-runner.js";
 import { listInstalledSkills } from "../commands/installed-skills.js";
 import { runTurnWithFallback } from "../codex/fallback-codex-runner.js";
-import { handleWechatControlCommand, parseWechatControlCommand } from "../commands/wechat-control-commands.js";
+import {
+  handleWechatControlCommand,
+  NEXT_NEW_SESSION_NAME_PREFIX,
+  parseWechatControlCommand,
+} from "../commands/wechat-control-commands.js";
 import type { ConversationRecord, PendingMessageRecord, StateStore } from "../state/sqlite-state-store.js";
 import { HttpWeixinClient, type GetUpdatesResponse, MessageItemType } from "../weixin/weixin-api-client.js";
 import { downloadInboundAttachments, type InboundAttachmentDownload } from "../weixin/media-download.js";
@@ -363,8 +367,12 @@ export class BridgeService {
       const prompt = buildInboundPromptWithAttachments(buildInboundPrompt(message), attachments);
       const commandText = extractTextPrompt(message);
       const parsedCommand = parseWechatControlCommand(commandText);
-      const availableSessions = parsedCommand?.name === "sessions"
-        ? await this.appServerCodexRunner.listThreads({ limit: 20 })
+      const needsLiveSessionView = parsedCommand !== undefined && ["pwd", "cwd", "session", "status", "ls", "sessions"].includes(parsedCommand.name);
+      const availableSessions = parsedCommand?.name === "sessions" || needsLiveSessionView
+        ? await this.appServerCodexRunner.listThreads({ limit: 50 })
+        : undefined;
+      const currentSession = needsLiveSessionView
+        ? await this.resolveCurrentSessionSummary(conversation, availableSessions)
         : undefined;
       const availableModels = parsedCommand?.name === "model" || parsedCommand?.name === "effort"
         ? await this.safeListModels(account.accountId)
@@ -380,6 +388,7 @@ export class BridgeService {
         activeTask: this.getActiveTaskSummary(conversation.conversationKey),
         pendingReview: this.getPendingReviewSummary(conversation.conversationKey),
         installedSkills: listInstalledSkills(),
+        ...(currentSession ? { currentSession } : {}),
         ...(availableSessions ? { availableSessions } : {}),
         ...(availableModels ? { availableModels } : {}),
       });
@@ -612,6 +621,7 @@ export class BridgeService {
         peerUserId: pending.peerUserId,
         contextToken: pending.contextToken ?? "",
         prompt: pending.prompt,
+        threadName: this.getPendingNewSessionName(pending.conversationKey) ?? undefined,
         typingTicket,
         model: runtimePreferences.model,
         reasoningEffort: runtimePreferences.reasoningEffort,
@@ -637,6 +647,7 @@ export class BridgeService {
         runnerThreadId: result.threadId,
         runnerCwd: result.cwd,
       });
+      this.clearPendingNewSessionName(pending.conversationKey);
       this.stateStore.markPendingMessageStatus(pending.id, {
         status: "sent",
         thread: {
@@ -759,6 +770,7 @@ export class BridgeService {
       }
       try {
         const thread = await this.appServerCodexRunner.resumeThread(input.result.action.threadId);
+        this.clearPendingNewSessionName(input.conversation.conversationKey);
         this.stateStore.updateConversationThread(input.conversation.conversationKey, {
           runnerBackend: "app_server",
           runnerThreadId: thread.id,
@@ -869,6 +881,39 @@ export class BridgeService {
     }
   }
 
+  private async resolveCurrentSessionSummary(
+    conversation: ConversationRecord,
+    availableSessions?: AppServerThreadSummary[] | undefined,
+  ): Promise<AppServerThreadSummary | undefined> {
+    if (conversation.runnerBackend !== "app_server" || !conversation.runnerThreadId) {
+      return undefined;
+    }
+
+    const listed = availableSessions?.find((session) => session.id === conversation.runnerThreadId);
+    if (listed) {
+      return listed;
+    }
+
+    try {
+      const resumed = await this.appServerCodexRunner.resumeThread(conversation.runnerThreadId);
+      return {
+        id: resumed.id,
+        ...(resumed.cwd ? { cwd: resumed.cwd } : {}),
+      };
+    } catch (error) {
+      this.stateStore.recordDiagnostic({
+        code: "current_session_lookup_failed",
+        accountId: conversation.accountId,
+        detail: JSON.stringify({
+          conversationKey: conversation.conversationKey,
+          threadId: conversation.runnerThreadId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      });
+      return undefined;
+    }
+  }
+
   private async readQuotaForChat(accountId: string): Promise<string> {
     try {
       const rateLimits = await this.appServerCodexRunner.readRateLimits();
@@ -893,9 +938,10 @@ export class BridgeService {
   }
 
   private createCodexRunnerForPending(pending: PendingMessageRecord): CodexRunner {
-    const runtimePreferences = this.getRuntimePreferences();
-    return {
-      runTurn: async ({ cwd, prompt, threadName, model, reasoningEffort, signal, onProgress, onReasoningProgress, onTurnStarted }) => {
+      const runtimePreferences = this.getRuntimePreferences();
+      const pendingNewSessionName = this.getPendingNewSessionName(pending.conversationKey);
+      return {
+        runTurn: async ({ cwd, prompt, threadName, model, reasoningEffort, signal, onProgress, onReasoningProgress, onTurnStarted }) => {
         const primaryBackend = this.config.codexBackend;
         const fallbackBackend = primaryBackend === "app_server" ? "exec" : undefined;
         const conversation = this.stateStore.resolveConversation({
@@ -919,6 +965,7 @@ export class BridgeService {
                 accountId: pending.accountId,
                 peerUserId: pending.peerUserId,
                 conversation,
+                allowImplicitReuse: !pendingNewSessionName,
               });
         if (effectiveConversationThread?.runnerBackend === "app_server" && effectiveConversationThread.runnerThreadId && effectiveConversationThread.runnerCwd && effectiveConversationThread.runnerCwd !== conversation.runnerCwd) {
           this.stateStore.updateConversationThread(conversation.conversationKey, {
@@ -931,7 +978,7 @@ export class BridgeService {
         return await runTurnWithFallback({
           cwd: effectiveCwd,
           prompt,
-          threadName,
+          threadName: pendingNewSessionName ?? threadName,
           model: model ?? runtimePreferences.model,
           reasoningEffort: reasoningEffort ?? runtimePreferences.reasoningEffort,
           signal,
@@ -966,8 +1013,12 @@ export class BridgeService {
     accountId: string;
     peerUserId: string;
     conversation: ConversationRecord;
+    allowImplicitReuse?: boolean | undefined;
   }): Promise<{ runnerBackend: "app_server"; runnerThreadId: string; runnerCwd?: string | undefined } | undefined> {
     if (this.config.codexBackend !== "app_server") {
+      return undefined;
+    }
+    if (input.allowImplicitReuse === false) {
       return undefined;
     }
     if (!this.shouldAttemptImplicitSessionReuse(input.conversation)) {
@@ -993,6 +1044,15 @@ export class BridgeService {
       });
       return undefined;
     }
+  }
+
+  private getPendingNewSessionName(conversationKey: string): string | undefined {
+    const value = this.stateStore.getRuntimeState(`${NEXT_NEW_SESSION_NAME_PREFIX}${conversationKey}`);
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  }
+
+  private clearPendingNewSessionName(conversationKey: string): void {
+    this.stateStore.saveRuntimeState(`${NEXT_NEW_SESSION_NAME_PREFIX}${conversationKey}`, null);
   }
 
   private shouldAttemptImplicitSessionReuse(conversation: ConversationRecord): boolean {
@@ -1170,7 +1230,7 @@ export class BridgeService {
         peerUserId: conversation.peerUserId,
         contextToken,
         text: [
-          "📡 Bridge recovered with pending backlog for this chat.",
+          "馃摗 Bridge recovered with pending backlog for this chat.",
           `pending messages: ${review.count}`,
           ...review.items.map((item, index) => `- ${index + 1}. ${item}`),
           "",
@@ -1248,3 +1308,4 @@ function shortenMiddle(value: string, maxLength: number): string {
   const tail = Math.max(1, maxLength - 6 - head);
   return `${trimmed.slice(0, head)} ... ${trimmed.slice(trimmed.length - tail)}`;
 }
+

@@ -664,6 +664,69 @@ describe("BridgeService", () => {
     expect(result.threadId).toBe("thread-new");
   });
 
+  test("uses the pending /new-session name and skips implicit same-contact reuse for the next turn", async () => {
+    const appServerRunTurn = vi.fn(async (input: { threadId?: string; threadName?: string; prompt: string }) => ({
+      runnerBackend: "app_server" as const,
+      threadId: input.threadId ?? "thread-new",
+      finalMessage: "final answer",
+      cwd: "C:/repo/codex-wechat-plugin",
+    }));
+    const stateStore = {
+      resolveConversation() {
+        return {
+          conversationKey: "acct-1:user-a@im.wechat",
+          accountId: "acct-1",
+          peerUserId: "user-a@im.wechat",
+          createdAt: "2026-04-15T00:00:00.000Z",
+          updatedAt: "2026-04-16T00:00:00.000Z",
+        };
+      },
+      getRuntimeState(key: string) {
+        if (key === "next_new_session_name:acct-1:user-a@im.wechat") {
+          return "VideoFM test";
+        }
+        return undefined;
+      },
+      recordDiagnostic() {},
+    };
+    const service = new BridgeService(makeConfig(), stateStore as any);
+    (service as any).appServerCodexRunner = {
+      runTurn: appServerRunTurn,
+      listThreads: vi.fn(async () => [
+        {
+          id: "thread-recent",
+          name: "WeChat user-a@im.wechat",
+        },
+      ]),
+    };
+    (service as any).execCodexRunner = {
+      runTurn: vi.fn(),
+    };
+
+    const runner = (service as any).createCodexRunnerForPending({
+      id: 4,
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      prompt: "hello named session",
+      status: "pending",
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+    });
+
+    const result = await runner.runTurn({
+      cwd: "C:/repo/codex-wechat-plugin",
+      prompt: "hello named session",
+      threadName: "WeChat user-a@im.wechat",
+    });
+
+    expect(appServerRunTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: undefined,
+      threadName: "VideoFM test",
+    }));
+    expect(result.threadId).toBe("thread-new");
+  });
+
   test("sends lifecycle notifications to recent conversations with context tokens", async () => {
     const sendTextMessage = vi.fn(async () => ({ messageId: "msg-1" }));
     const service = new BridgeService(makeConfig(), {
@@ -713,7 +776,7 @@ describe("BridgeService", () => {
     expect(sendTextMessage).toHaveBeenCalledWith(expect.objectContaining({
       peerUserId: "user-a@im.wechat",
       contextToken: "ctx-a",
-      text: expect.stringContaining("馃摗"),
+      text: expect.stringContaining("📡 Bridge online and ready."),
     }));
   });
 

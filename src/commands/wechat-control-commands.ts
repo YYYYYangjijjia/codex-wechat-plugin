@@ -33,6 +33,10 @@ type PendingReviewSummary = {
   items: string[];
 };
 
+type TestSessionBinding = {
+  threadId: string;
+};
+
 type CommandAction =
   | { type: "stop" }
   | { type: "append"; guidance: string }
@@ -47,6 +51,9 @@ type ParsedCommand = {
 };
 
 type SystemMessageCategory = "control" | "status" | "config" | "success" | "warning";
+
+export const TEST_SESSION_BINDING_KEY = "test_session_binding";
+export const NEXT_NEW_SESSION_NAME_PREFIX = "next_new_session_name:";
 
 export function parseWechatControlCommand(text: string): ParsedCommand | undefined {
   const trimmed = text.trim();
@@ -78,6 +85,7 @@ export function handleWechatControlCommand(input: {
   activeTask?: ActiveTaskSummary | undefined;
   installedSkills?: InstalledSkillsCatalog;
   availableSessions?: AppServerThreadSummary[];
+  currentSession?: AppServerThreadSummary | undefined;
   availableModels?: AppServerModelSummary[];
   pendingReview?: PendingReviewSummary | undefined;
 }): { handled: boolean; responseText?: string | undefined; action?: CommandAction | undefined } {
@@ -86,6 +94,7 @@ export function handleWechatControlCommand(input: {
     return { handled: false };
   }
   const runtimePreferences = readRuntimePreferences(input.stateStore.getRuntimeState("codex_runtime_preferences"));
+  const effectiveWorkspaceDir = input.currentSession?.cwd ?? input.conversation.runnerCwd ?? input.workspaceDir;
 
   switch (parsed.name) {
     case "help":
@@ -96,8 +105,12 @@ export function handleWechatControlCommand(input: {
           "- /help - show this command list",
           "- /pwd - show the current workspace directory",
           "- /session - show the current Codex session mapping for this WeChat chat",
-          "- /newsession - clear the mapped Codex session so the next normal message starts a new one",
+          "- /new-session [name] - clear the mapped Codex session; optionally name the next new session",
+          "- /newsession - legacy alias for /new-session",
           "- /use-session <id> - bind this WeChat chat to a specific Codex session id",
+          "- /test-session - switch this chat to the configured shared test session",
+          "- /test-session bind <id> - bind the shared test session id",
+          "- /test-session unbind - clear the shared test session id",
           "- /quota - show the current Codex rate-limit snapshot",
           "- /skills - show the currently installed local and plugin skills",
           "- /stop - interrupt the current Codex task for this chat",
@@ -119,20 +132,30 @@ export function handleWechatControlCommand(input: {
     case "cwd":
       return {
         handled: true,
-        responseText: formatSystemReply("control", `workspace: ${input.conversation.runnerCwd ?? input.workspaceDir}`),
+        responseText: formatSystemReply("control", `workspace: ${effectiveWorkspaceDir}`),
       };
     case "session":
       return {
         handled: true,
-        responseText: formatSystemReply("config", formatSession(input.conversation)),
+        responseText: formatSystemReply("config", formatSession({
+          conversation: input.conversation,
+          currentSession: input.currentSession,
+        })),
       };
     case "newsession":
+    case "new-session":
     case "newthread":
+    case "new-thread": {
+      const requestedName = parsed.args.join(" ").trim();
       input.stateStore.clearConversationThread(input.conversation.conversationKey);
+      saveNextNewSessionName(input.stateStore, input.conversation.conversationKey, requestedName || undefined);
       return {
         handled: true,
-        responseText: formatSystemReply("config", "Cleared the current session mapping. The next normal message will start a new Codex session."),
+        responseText: formatSystemReply("config", requestedName
+          ? `Cleared the current session mapping. The next normal message will start a new Codex session named ${requestedName}.`
+          : "Cleared the current session mapping. The next normal message will start a new Codex session."),
       };
+    }
     case "use-session": {
       const threadId = parsed.args[0];
       if (!threadId) {
@@ -145,6 +168,48 @@ export function handleWechatControlCommand(input: {
         handled: true,
         responseText: formatSystemReply("config", `Switching this chat to session ${threadId}. Verifying the target workspace first.`),
         action: { type: "use_session", threadId },
+      };
+    }
+    case "test-session": {
+      const subcommand = parsed.args[0]?.toLowerCase();
+      if (!subcommand) {
+        const binding = readTestSessionBinding(input.stateStore.getRuntimeState(TEST_SESSION_BINDING_KEY));
+        if (!binding?.threadId) {
+          return {
+            handled: true,
+            responseText: formatSystemReply("warning", "No shared /test-session is configured yet. Use /test-session bind <session-id> first."),
+          };
+        }
+        return {
+          handled: true,
+          responseText: formatSystemReply("config", `Switching this chat to the configured test session ${binding.threadId}.`),
+          action: { type: "use_session", threadId: binding.threadId },
+        };
+      }
+      if (subcommand === "bind") {
+        const threadId = parsed.args.slice(1).join(" ").trim();
+        if (!threadId) {
+          return {
+            handled: true,
+            responseText: formatSystemReply("warning", "Usage: /test-session bind <session-id>"),
+          };
+        }
+        input.stateStore.saveRuntimeState(TEST_SESSION_BINDING_KEY, { threadId });
+        return {
+          handled: true,
+          responseText: formatSystemReply("config", `Bound /test-session to ${threadId}.`),
+        };
+      }
+      if (subcommand === "unbind") {
+        input.stateStore.saveRuntimeState(TEST_SESSION_BINDING_KEY, null);
+        return {
+          handled: true,
+          responseText: formatSystemReply("config", "Cleared the configured /test-session binding."),
+        };
+      }
+      return {
+        handled: true,
+        responseText: formatSystemReply("warning", "Usage: /test-session [bind <session-id>|unbind]"),
       };
     }
     case "quota":
@@ -328,8 +393,9 @@ export function handleWechatControlCommand(input: {
       return {
         handled: true,
         responseText: formatSystemReply("status", formatStatus({
-          workspaceDir: input.workspaceDir,
+          workspaceDir: effectiveWorkspaceDir,
           conversation: input.conversation,
+          currentSession: input.currentSession,
           accounts: input.stateStore.listAccounts(),
           pendingMessages: input.stateStore.listPendingMessages(["pending"]),
           diagnostics: input.stateStore.listDiagnostics(20),
@@ -357,7 +423,7 @@ export function handleWechatControlCommand(input: {
       return {
         handled: true,
         responseText: formatSystemReply("control", formatWorkspaceListing({
-          workspaceDir: input.workspaceDir,
+          workspaceDir: effectiveWorkspaceDir,
           relativePath: parsed.args[0],
         })),
       };
@@ -416,6 +482,7 @@ function formatSkillLines(names: string[]): string[] {
 function formatStatus(input: {
   workspaceDir: string;
   conversation: ConversationRecord;
+  currentSession?: AppServerThreadSummary | undefined;
   accounts: AccountRecord[];
   pendingMessages: PendingMessageRecord[];
   diagnostics: DiagnosticEvent[];
@@ -423,12 +490,14 @@ function formatStatus(input: {
   const activeAccounts = input.accounts.filter((account) => account.loginState === "active");
   const lastReplyTiming = input.diagnostics.find((event) => event.code === "reply_timing");
   const lastReplyFailure = input.diagnostics.find((event) => event.code === "reply_failed");
+  const sessionName = input.currentSession?.name?.trim();
   return [
     `workspace: ${input.workspaceDir}`,
     `accounts: ${input.accounts.length} total / ${activeAccounts.length} active`,
     `pending messages: ${input.pendingMessages.length}`,
     `current backend: ${input.conversation.runnerBackend ?? "none"}`,
     `current session: ${input.conversation.runnerThreadId ?? input.conversation.codexThreadId ?? "none"}`,
+    `current session name: ${sessionName && sessionName.length > 0 ? sessionName : "unknown"}`,
     `last reply_timing: ${formatReplyTiming(lastReplyTiming)}`,
     `last reply_failed: ${lastReplyFailure ? shorten(lastReplyFailure.detail, 80) : "none"}`,
   ].join("\n");
@@ -525,14 +594,21 @@ function resolveWorkspacePath(workspaceDir: string, relativePath?: string): stri
   return resolved;
 }
 
-function formatSession(conversation: ConversationRecord): string {
+function formatSession(input: {
+  conversation: ConversationRecord;
+  currentSession?: AppServerThreadSummary | undefined;
+}): string {
+  const conversation = input.conversation;
   const backend = conversation.runnerBackend ?? "none";
   const threadId = conversation.runnerThreadId ?? conversation.codexThreadId ?? "none";
+  const sessionName = input.currentSession?.name?.trim();
+  const workspace = input.currentSession?.cwd ?? conversation.runnerCwd ?? "unknown";
   return [
     `conversation: ${conversation.conversationKey}`,
     `backend: ${backend}`,
     `session: ${threadId}`,
-    `workspace: ${conversation.runnerCwd ?? "unknown"}`,
+    `session name: ${sessionName && sessionName.length > 0 ? sessionName : "unknown"}`,
+    `workspace: ${workspace}`,
   ].join("\n");
 }
 
@@ -717,6 +793,19 @@ function readRuntimePreferences(value: unknown): RuntimePreferences {
 
 function saveRuntimePreferences(stateStore: ControlCommandStore, value: RuntimePreferences): void {
   stateStore.saveRuntimeState("codex_runtime_preferences", sanitizeRuntimePreferences(value));
+}
+
+function readTestSessionBinding(value: unknown): TestSessionBinding | undefined {
+  if (!isObject(value) || typeof value.threadId !== "string" || !value.threadId.trim()) {
+    return undefined;
+  }
+  return {
+    threadId: value.threadId.trim(),
+  };
+}
+
+function saveNextNewSessionName(stateStore: ControlCommandStore, conversationKey: string, value: string | undefined): void {
+  stateStore.saveRuntimeState(`${NEXT_NEW_SESSION_NAME_PREFIX}${conversationKey}`, value?.trim() ? value.trim() : null);
 }
 
 function sanitizeRuntimePreferences(value: RuntimePreferences): RuntimePreferences {

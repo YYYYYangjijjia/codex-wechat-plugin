@@ -141,14 +141,16 @@ describe("wechat control commands", () => {
     expect(result.handled).toBe(true);
     expect(result.responseText).toContain("Available commands:");
     expect(result.responseText).toContain("\n- /help");
-        expect(result.responseText).toContain("\n- /pwd");
-        expect(result.responseText).toContain("\n- /quota");
-        expect(result.responseText).toContain("\n- /skills");
-        expect(result.responseText).toContain("\n- /stop");
-        expect(result.responseText).toContain("\n- /append");
-        expect(result.responseText).toContain("\n- /model");
-        expect(result.responseText).toContain("\n- /effort");
-        expect(result.responseText).toContain("\n- /final");
+    expect(result.responseText).toContain("\n- /pwd");
+    expect(result.responseText).toContain("\n- /new-session [name]");
+    expect(result.responseText).toContain("\n- /test-session");
+    expect(result.responseText).toContain("\n- /quota");
+    expect(result.responseText).toContain("\n- /skills");
+    expect(result.responseText).toContain("\n- /stop");
+    expect(result.responseText).toContain("\n- /append");
+    expect(result.responseText).toContain("\n- /model");
+    expect(result.responseText).toContain("\n- /effort");
+    expect(result.responseText).toContain("\n- /final");
   });
 
   test("returns a stop action when there is an active task", () => {
@@ -420,6 +422,11 @@ describe("wechat control commands", () => {
       }),
       workspaceDir: "C:/repo/codex-wechat-plugin",
       primaryBackend: "app_server",
+      currentSession: makeSession({
+        id: "thread-app-1",
+        name: "VideoFM session",
+        cwd: "D:/live-workspace",
+      }),
     });
     const sessionResult = handleWechatControlCommand({
       text: "/session",
@@ -431,14 +438,20 @@ describe("wechat control commands", () => {
       }),
       workspaceDir: "C:/repo/codex-wechat-plugin",
       primaryBackend: "app_server",
+      currentSession: makeSession({
+        id: "thread-app-1",
+        name: "VideoFM session",
+        cwd: "D:/live-workspace",
+      }),
     });
 
     expect(pwdResult.responseText).toContain("workspace:");
-    expect(pwdResult.responseText).toContain("D:/other-workspace");
+    expect(pwdResult.responseText).toContain("D:/live-workspace");
     expect(sessionResult.responseText).toContain("⚙️");
     expect(sessionResult.responseText).toContain("app_server");
     expect(sessionResult.responseText).toContain("thread-app-1");
-    expect(sessionResult.responseText).toContain("D:/other-workspace");
+    expect(sessionResult.responseText).toContain("VideoFM session");
+    expect(sessionResult.responseText).toContain("D:/live-workspace");
   });
 
   test("prefixes status and warning replies with category emoji", () => {
@@ -463,7 +476,26 @@ describe("wechat control commands", () => {
     expect(unknownResult.responseText?.startsWith("⚠️ ")).toBe(true);
   });
 
-  test("clears or requests an override for the mapped session", () => {
+  test("clears the current session mapping and can remember the next session name", () => {
+    const store = new FakeStore();
+    const clearResult = handleWechatControlCommand({
+      text: "/new-session VideoFM test",
+      stateStore: store,
+      conversation: makeConversation({
+        runnerBackend: "app_server",
+        runnerThreadId: "thread-app-1",
+      }),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+
+    expect(clearResult.responseText).toContain("new Codex session");
+    expect(clearResult.responseText).toContain("VideoFM test");
+    expect(store.cleared).toEqual(["acct-1:user-a"]);
+    expect(store.runtime.get("next_new_session_name:acct-1:user-a")).toBe("VideoFM test");
+  });
+
+  test("supports the legacy /newsession alias", () => {
     const store = new FakeStore();
     const clearResult = handleWechatControlCommand({
       text: "/newsession",
@@ -475,6 +507,14 @@ describe("wechat control commands", () => {
       workspaceDir: "C:/repo/codex-wechat-plugin",
       primaryBackend: "app_server",
     });
+
+    expect(clearResult.responseText).toContain("new Codex session");
+    expect(store.cleared).toEqual(["acct-1:user-a"]);
+    expect(store.runtime.get("next_new_session_name:acct-1:user-a")).toBeNull();
+  });
+
+  test("requests an override for the mapped session", () => {
+    const store = new FakeStore();
     const setResult = handleWechatControlCommand({
       text: "/use-session thread-app-2",
       stateStore: store,
@@ -483,11 +523,48 @@ describe("wechat control commands", () => {
       primaryBackend: "app_server",
     });
 
-    expect(clearResult.responseText).toContain("new Codex session");
     expect(setResult.responseText).toContain("Switching this chat");
     expect(setResult.action).toEqual({ type: "use_session", threadId: "thread-app-2" });
-    expect(store.cleared).toEqual(["acct-1:user-a"]);
     expect(store.updated).toEqual([]);
+  });
+
+  test("binds, uses, and unbinds the shared test session", () => {
+    const store = new FakeStore();
+    const bindResult = handleWechatControlCommand({
+      text: "/test-session bind thread-test-1",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const useResult = handleWechatControlCommand({
+      text: "/test-session",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const unbindResult = handleWechatControlCommand({
+      text: "/test-session unbind",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+    const missingResult = handleWechatControlCommand({
+      text: "/test-session",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+
+    expect(bindResult.responseText).toContain("Bound /test-session");
+    expect(useResult.responseText).toContain("Switching this chat to the configured test session");
+    expect(useResult.action).toEqual({ type: "use_session", threadId: "thread-test-1" });
+    expect(unbindResult.responseText).toContain("Cleared the configured /test-session binding");
+    expect(store.runtime.get("test_session_binding")).toBeNull();
+    expect(missingResult.responseText).toContain("Use /test-session bind <session-id>");
   });
 
   test("returns a live quota action", () => {
@@ -555,13 +632,51 @@ describe("wechat control commands", () => {
       }),
       workspaceDir: "C:/repo/codex-wechat-plugin",
       primaryBackend: "app_server",
+      currentSession: makeSession({
+        id: "thread-app-1",
+        name: "VideoFM session",
+        cwd: "D:/live-workspace",
+      }),
     });
 
-    expect(result.responseText).toContain("workspace: C:/repo/codex-wechat-plugin");
+    expect(result.responseText).toContain("workspace: D:/live-workspace");
     expect(result.responseText).toContain("accounts: 2 total / 1 active");
     expect(result.responseText).toContain("pending messages: 1");
     expect(result.responseText).toContain("current backend: app_server");
     expect(result.responseText).toContain("last reply_timing");
+  });
+
+  test("lists files from the live session workspace when available", () => {
+    const bridgeWorkspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "wechat-bridge-root-"));
+    const sessionWorkspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "wechat-session-root-"));
+    fs.writeFileSync(path.join(bridgeWorkspaceDir, "bridge.txt"), "bridge\n", "utf8");
+    fs.writeFileSync(path.join(sessionWorkspaceDir, "session.txt"), "session\n", "utf8");
+
+    try {
+      const result = handleWechatControlCommand({
+        text: "/ls",
+        stateStore: new FakeStore(),
+        conversation: makeConversation({
+          runnerBackend: "app_server",
+          runnerThreadId: "thread-app-1",
+          runnerCwd: bridgeWorkspaceDir,
+        }),
+        workspaceDir: bridgeWorkspaceDir,
+        primaryBackend: "app_server",
+        currentSession: makeSession({
+          id: "thread-app-1",
+          name: "VideoFM session",
+          cwd: sessionWorkspaceDir,
+        }),
+      });
+
+      expect(result.responseText).toContain(`path: ${sessionWorkspaceDir}`);
+      expect(result.responseText).toContain("session.txt");
+      expect(result.responseText).not.toContain("bridge.txt");
+    } finally {
+      fs.rmSync(bridgeWorkspaceDir, { recursive: true, force: true });
+      fs.rmSync(sessionWorkspaceDir, { recursive: true, force: true });
+    }
   });
 
   test("lists recent diagnostics with an optional limit", () => {

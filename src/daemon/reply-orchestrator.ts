@@ -16,6 +16,7 @@ export type ReplyOrchestrator = {
     peerUserId: string;
     contextToken: string;
     prompt: string;
+    threadName?: string | undefined;
     typingTicket?: string | undefined;
     model?: string | undefined;
     reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | undefined;
@@ -200,7 +201,7 @@ export function createReplyOrchestrator(input: {
           cwd: process.cwd(),
           prompt: message.prompt,
           threadId: message.threadId,
-          threadName: `WeChat ${message.peerUserId}`,
+          threadName: message.threadName ?? `WeChat ${message.peerUserId}`,
           model: message.model,
           reasoningEffort: message.reasoningEffort,
           signal: message.signal,

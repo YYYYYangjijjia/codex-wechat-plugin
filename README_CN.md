@@ -214,9 +214,13 @@ npm run typecheck
 
 - `/help` - 显示可用桥接命令列表。
 - `/pwd` - 显示当前微信聊天对应的工作目录。
-- `/session` - 显示当前 backend、session id 与映射的 workspace。
-- `/newsession` - 清除当前 session 绑定，让下一条消息新建 session。
+- `/session` - 显示当前 backend、session id、最新 session 名称与映射的 workspace。
+- `/new-session [name]` - 清除当前 session 绑定，并可为下一次新建 session 指定名称。
+- `/newsession` - `/new-session` 的兼容别名。
 - `/use-session <id>` - 将当前微信聊天绑定到指定 Codex session。
+- `/test-session` - 立刻切换到已配置的共享测试 session。
+- `/test-session bind <id>` - 绑定或重新绑定共享测试 session id。
+- `/test-session unbind` - 清除共享测试 session 绑定。
 - `/append <text>` - 在支持的情况下向当前运行任务追加引导文本。
 - `/stop` - 停止当前聊天正在运行的任务。
 - `/pending` - 查看当前聊天的 backlog 审核状态。
@@ -230,7 +234,7 @@ npm run typecheck
 - `/status` - 查看桥接健康状态、账号状态与最近回复情况。
 - `/diagnostics [n]` - 查看最近的诊断事件。
 - `/threads` - 查看最近的微信到 Codex 会话映射。
-- `/sessions [n]` - 列出可绑定的 Codex app-server sessions。
+- `/sessions [n]` - 列出可绑定的 Codex app-server sessions，并显示它们当前最新的名称。
 - `/ls [path]` - 列出当前 workspace 或相对子目录中的文件。
 
 ## 附件

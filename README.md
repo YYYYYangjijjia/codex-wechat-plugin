@@ -234,9 +234,13 @@ npm run typecheck
 
 - `/help` - show the available bridge commands.
 - `/pwd` - show the current workspace for this WeChat chat.
-- `/session` - show the current backend, session id, and mapped workspace.
-- `/newsession` - clear the current session binding so the next message starts a new session.
+- `/session` - show the current backend, session id, latest session name, and mapped workspace.
+- `/new-session [name]` - clear the current session binding and optionally name the next newly created session.
+- `/newsession` - legacy alias for `/new-session`.
 - `/use-session <id>` - bind this WeChat chat to a specific Codex session.
+- `/test-session` - switch this chat to the configured shared test session.
+- `/test-session bind <id>` - bind or replace the shared test session id.
+- `/test-session unbind` - clear the shared test session binding.
 - `/append <text>` - append steering text to the currently running task when supported.
 - `/stop` - stop the currently running task for this chat.
 - `/pending` - show the current backlog review state for this chat.
@@ -250,7 +254,7 @@ npm run typecheck
 - `/status` - show bridge health, account state, and recent reply status.
 - `/diagnostics [n]` - show the most recent diagnostic events.
 - `/threads` - show recent WeChat-to-Codex conversation mappings.
-- `/sessions [n]` - list available Codex app-server sessions that can be bound.
+- `/sessions [n]` - list available Codex app-server sessions, including their latest live names.
 - `/ls [path]` - list files in the current workspace or a relative subdirectory.
 
 ## Attachments

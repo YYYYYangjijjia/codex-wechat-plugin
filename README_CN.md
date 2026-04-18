@@ -178,20 +178,36 @@ tray 是一个**可选**的 Windows 操作入口，可以：
 
 ## 使用
 
-### 本地命令
+推荐的实际使用方式是：
 
-```powershell
-npm run build
-npm run install:plugin
-npm run login
-npm run test
-npm run typecheck
-```
+- 按 [安装](#安装) 一节把插件安装到 Codex Desktop
+- 由 Codex Desktop 直接加载并使用这个插件
+- 从微信端操作桥接；如有需要，再使用 Windows 托盘入口做本地运维
 
-Windows 下如需 tray：
+### 可选的 Windows 托盘入口
+
+如果在 Windows 下需要本地桌面入口：
 
 ```powershell
 npm run install:tray
+```
+
+然后：
+- 双击桌面快捷方式 `WeChat Bridge`
+- 或手动启动安装版 tray runtime
+
+这一步是可选的。tray 只是用于桥接状态查看和 daemon 生命周期控制的便捷入口，不是插件安装和使用的前提。
+
+### 本地运维命令
+
+这些命令用于本地维护，不是普通最终用户的主要使用流程：
+
+```powershell
+npm run login
+npm run status
+npm run build
+npm run test
+npm run typecheck
 ```
 
 ### 微信侧命令

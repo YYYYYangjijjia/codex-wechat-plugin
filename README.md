@@ -194,12 +194,34 @@ For MCP:
 
 ## Usage
 
-### Local Commands
+The primary usage model is:
+
+- install the plugin into Codex Desktop through the steps in [Install](#install)
+- let Codex Desktop load and use the plugin directly
+- operate the bridge from WeChat and, optionally, from the Windows tray entrypoint
+
+### Optional Windows Tray Entrypoint
+
+If a local desktop entrypoint is desired on Windows:
 
 ```powershell
-npm run build
-npm run install:plugin
+npm run install:tray
+```
+
+Then:
+- double-click the desktop shortcut `WeChat Bridge`
+- or launch the installed tray runtime manually
+
+This is optional. The tray is a convenience entrypoint for bridge status inspection and daemon lifecycle control; it is not required for plugin installation.
+
+### Local Operator Commands
+
+These are local maintenance commands, not the primary end-user usage flow:
+
+```powershell
 npm run login
+npm run status
+npm run build
 npm run test
 npm run typecheck
 ```

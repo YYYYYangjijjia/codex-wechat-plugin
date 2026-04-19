@@ -1,5 +1,5 @@
 interface:
-  display_name: "WeChat Ops"
+  display_name: "WeChat Bridge:OPS"
   short_description: "Inspect bridge state and recover WeChat / Weixin delivery issues"
   icon_small: "./assets/icon.png"
   icon_large: "./assets/icon.png"

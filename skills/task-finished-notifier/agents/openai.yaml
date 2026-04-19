@@ -1,5 +1,5 @@
 interface:
-  display_name: "Task Finished Notifier"
+  display_name: "WeChat Bridge:Task Finished Notifier"
   short_description: "Send a structured completion notice through the local WeChat bridge"
   icon_small: "./assets/icon.png"
   icon_large: "./assets/icon.png"

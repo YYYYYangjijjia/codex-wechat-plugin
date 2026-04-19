@@ -63,6 +63,9 @@
 - 分段输出，避免用户长时间等待却没有任何反馈，并支持可选 `/final` 汇总
 - fenced code、表格、列表、附件类输出的结构化处理
 - 图片/文件附件写入插件运行时缓存目录，并以附件感知方式注入给 Codex
+- 支持显式的本地图片 / 文件回发到微信，可由本地运维或 MCP 工具指定路径发送
+- 当微信用户明确要求“把生成结果发回微信”时，支持仅对当前轮启用自动文件回传
+- 当媒体回传失败或无法安全定位产物时，会降级回发文本说明，而不是静默失败
 - 微信侧控制命令，如 `/help`、`/session`、`/use-session`、`/append`、`/stop`、`/restart`、`/status`、`/quota`、`/model`、`/effort`、`/skills`
 - 支持从微信侧覆盖模型与推理强度
 - 支持从微信侧切换是否发送最终完整汇总
@@ -72,7 +75,6 @@
 ### 当前暂不支持
 - 群聊支持
 - 纯语音入站理解
-- 向微信回发图片 / 文件
 - 聊天记录转发支持
 - 超出当前本地运行守护范围之外的长期无人值守硬化
 
@@ -249,6 +251,12 @@ npm run typecheck
 
 桥接会把附件元数据和本地路径注入给 Codex prompt。这个缓存属于运行时状态，默认不会纳入 git。
 
+出站回传策略更保守：
+- Codex 默认不会把本地文件自动发回微信。
+- 只有当微信用户在当前轮里明确要求“把生成结果发回微信”时，才会启用自动文件回传。
+- 本地运维或 MCP 工具也可以在存在 fresh reply context 时，显式发送指定的本地图片或文件路径。
+- 如果媒体回传失败，bridge 仍会尽量回发文本说明，而不是静默失败。
+
 ## 仓库结构
 
 - [`.codex-plugin/plugin.json`](./.codex-plugin/plugin.json)：插件清单
@@ -258,6 +266,7 @@ npm run typecheck
 - [`scripts/install-codex-plugin.ps1`](./scripts/install-codex-plugin.ps1)：本地 Codex plugin 安装脚本
 - [`scripts/install-tray-launcher.ps1`](./scripts/install-tray-launcher.ps1)：tray + 桌面快捷方式安装脚本
 - [`skills/wechat-bridge-ops/SKILL.md`](./skills/wechat-bridge-ops/SKILL.md)：内置运维技能（原始 skill 名为 `wechat-bridge-ops`，在 Codex 中显示为 `WeChat Bridge:OPS`）
+- [`skills/deliver-file/SKILL.md`](./skills/deliver-file/SKILL.md)：内置文件投递技能（原始 skill 名为 `deliver-file`，在 Codex 中显示为 `WeChat Bridge:Deliver File`）
 - [`skills/task-finished-notifier/SKILL.md`](./skills/task-finished-notifier/SKILL.md)：内置任务完成通知技能（原始 skill 名为 `wechat-bridge-task-finished-notifier`，在 Codex 中显示为 `WeChat Bridge:Task Finished Notifier`）
 - [`docs/human-guide.md`](./docs/human-guide.md)：面向操作用户的文档
 - [`docs/codex-agent-guide.md`](./docs/codex-agent-guide.md)：面向 Codex agent 的文档
@@ -279,7 +288,6 @@ npm run typecheck
 ## 限制
 
 - 当前只支持私聊
-- 尚未实现出站媒体回发
 - 部分手动发送与系统通知仍依赖 fresh WeChat reply context
 - Node 22 的 `node:sqlite` 仍属于 experimental
 

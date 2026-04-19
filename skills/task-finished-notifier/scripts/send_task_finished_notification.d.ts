@@ -12,3 +12,5 @@ export function resolveSourceSessionId(
   conversation: NotificationConversation,
   env?: Record<string, string | undefined>,
 ): string;
+
+export function readPayloadFile(filePath: string): Record<string, unknown>;

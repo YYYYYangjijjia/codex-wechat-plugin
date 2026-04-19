@@ -2,9 +2,15 @@
 
 class FakeStore {
   public deliveries: Array<{ conversationKey: string; status: string; errorMessage?: string; finalMessage?: string }> = [];
+  public queued: Array<Record<string, unknown>> = [];
 
   recordDeliveryAttempt(entry: { conversationKey: string; status: string; errorMessage?: string; finalMessage?: string }): void {
     this.deliveries.push(entry);
+  }
+
+  enqueueOutboundDelivery(entry: Record<string, unknown>): number {
+    this.queued.push(entry);
+    return this.queued.length;
   }
 }
 
@@ -368,6 +374,67 @@ describe("reply orchestrator", () => {
       status: "sent",
       finalMessage: "final answer",
     }]);
+  });
+
+  test("queues the final summary instead of failing when the reply context expired", async () => {
+    const events: string[] = [];
+    const store = new FakeStore();
+    const orchestrator = createReplyOrchestrator({
+      stateStore: store as any,
+      codexRunner: {
+        async runTurn() {
+          events.push("runner");
+          return { runnerBackend: "app_server", threadId: "thread-1", finalMessage: "final answer", cwd: "C:/repo/codex-wechat-plugin" };
+        },
+      },
+      weixinClient: {
+        async setTyping() {
+          events.push("typing:start");
+        },
+        async sendTextMessage(input) {
+          events.push(`send:${input.text}`);
+          throw new Error("sendmessage failed: ret=-2 (the current reply context is no longer valid; wait for a fresh inbound message to refresh context_token before sending again)");
+        },
+        async stopTyping() {
+          events.push("typing:stop");
+        },
+      },
+    });
+
+    const result = await orchestrator.handleInboundMessage({
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-1",
+      prompt: "hello",
+      typingTicket: "ticket-1",
+    });
+
+    expect(result.outboundMessageId).toBe("queued:1");
+    expect(store.queued).toEqual([
+      expect.objectContaining({
+        conversationKey: "acct-1:user-a@im.wechat",
+        accountId: "acct-1",
+        peerUserId: "user-a@im.wechat",
+        contextToken: "ctx-1",
+        kind: "text",
+        status: "waiting_for_fresh_context",
+        payload: {
+          text: "<FINAL>:\nfinal answer",
+        },
+      }),
+    ]);
+    expect(store.deliveries).toContainEqual({
+      conversationKey: "acct-1:user-a@im.wechat",
+      status: "sent_deferred",
+      finalMessage: "final answer",
+    });
+    expect(events).toEqual([
+      "typing:start",
+      "runner",
+      "typing:stop",
+      "send:<FINAL>:\nfinal answer",
+    ]);
   });
 
   test("caps interim progress sends and still delivers the final summary", async () => {

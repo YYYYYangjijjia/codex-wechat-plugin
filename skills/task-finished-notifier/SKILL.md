@@ -33,6 +33,20 @@ When this skill runs inside a normal Codex Desktop session and you do not pass `
 - Preserve Chinese text and emoji by using a UTF-8-safe payload path.
 - Allow any Codex session to push a result to WeChat / Weixin, as long as the bridge has a valid delivery route.
 
+## Non-ASCII Enforcement
+
+This rule is strict and mandatory:
+
+- If `Task Overview`, `Final Results`, `Next Step`, or `Session Name` contains any Chinese, emoji, or other non-ASCII content, do **not** pass that text through shell flags.
+- Do **not** build a shell command that embeds Chinese directly.
+- Do **not** rely on PowerShell, Windows console code pages, terminal defaults, or luck.
+- The only approved path for non-ASCII notification content is:
+  1. write a UTF-8 JSON payload file on disk
+  2. keep the shell command ASCII-safe
+  3. invoke the notifier with `--payload-file <path>`
+
+If you bypass this, you are violating this skill.
+
 ## Required message format
 
 ```text
@@ -55,34 +69,44 @@ When this skill runs inside a normal Codex Desktop session and you do not pass `
 - Only use bridge-side session metadata as an explicit fallback when you intentionally want to report the mapped WeChat session instead.
 - **Do not pass Chinese text directly through shell command-line arguments.**
 - **Do not rely on the Windows shell or PowerShell default encoding to preserve Chinese.**
-- When any field contains Chinese, emoji, or other non-ASCII content, write a UTF-8 JSON payload file first and pass it with `--payload-file`.
-- Keep the shell command itself ASCII-safe and let the script read UTF-8 content from disk.
+- **When any field contains Chinese, emoji, or other non-ASCII content, you must write a UTF-8 JSON payload file first and pass it with `--payload-file`.**
+- **Keep the shell command itself ASCII-safe and let the script read UTF-8 content from disk.**
+- **Prefer the payload-file path by default, even when you think one specific shell invocation might survive.**
+- **The notifier script may reject unsafe non-ASCII CLI content. That is intentional.**
 
-## Recommended sending path
+## Required execution pattern
 
-1. Write a UTF-8 JSON payload file.
-2. Invoke the script with `--payload-file <path>`.
-3. Use `--dry-run` first if you need to inspect the final text.
+Use this default pattern whenever the notification contains Chinese or emoji:
 
-Example payload file:
+1. Create a UTF-8 JSON payload file on disk.
+2. Keep the shell command ASCII-safe.
+3. Call:
+
+```powershell
+node skills/task-finished-notifier/scripts/send_task_finished_notification.mjs --payload-file C:\path\to\task-finished.json
+```
+
+4. If needed, inspect the final message first with:
+
+```powershell
+node skills/task-finished-notifier/scripts/send_task_finished_notification.mjs --payload-file C:\path\to\task-finished.json --dry-run
+```
+
+5. Do not use `--overview`, `--results`, `--next-step`, or `--session-name` for non-ASCII content.
+
+## Example payload file
 
 ```json
 {
-  "overview": "已修复 /use-record 切换 session 时的 app-server 初始化恢复问题。",
-  "results": "AppServerCodexRunner 现在会在 Not initialized 时自动重置并重试一次；安装版已同步。",
-  "nextStep": "请在微信里再次执行 /use-record videofm0302 进行验证。",
+  "overview": "Write non-ASCII text into this UTF-8 file, not into CLI flags.",
+  "results": "Keep the shell command ASCII-safe.",
+  "nextStep": "Invoke the notifier with --payload-file only.",
   "sessionId": "<source-session-id>",
   "sessionName": "<source-session-name>"
 }
 ```
 
-Example invocation:
-
-```powershell
-node skills/task-finished-notifier/scripts/send_task_finished_notification.mjs --payload-file C:\temp\task-finished.json
-```
-
-Useful flags:
+## Useful flags
 
 - `--dry-run`: print the final message without sending it.
 - `--payload-file <path>`: read UTF-8 JSON content instead of passing non-ASCII text through shell arguments.
@@ -96,3 +120,4 @@ Useful flags:
 - The script sends through the installed plugin runtime under `~/.codex/plugins/codex-wechat-bridge`.
 - The target WeChat / Weixin conversation still requires a fresh valid reply context.
 - If the bridge returns `ret=-2`, wait for a fresh inbound message in that chat and retry.
+- If a caller provides non-ASCII notification content through CLI flags, the correct response is to stop and switch to `--payload-file`, not to hope the shell encoding survives.

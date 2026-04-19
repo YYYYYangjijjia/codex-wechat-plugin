@@ -2,7 +2,9 @@
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { HttpWeixinClient } from '../../../dist/src/weixin/weixin-api-client.js';
+import { loadBridgeConfig } from '../../../dist/src/config/app-config.js';
+import { BridgeService } from '../../../dist/src/daemon/bridge-service.js';
+import { createStateStore } from '../../../dist/src/state/sqlite-state-store.js';
 import { AppServerClient } from '../../../dist/src/codex/app-server-client.js';
 import { WebSocketAppServerTransport } from '../../../dist/src/codex/app-server-websocket-transport.js';
 
@@ -62,14 +64,40 @@ function parseArgs(argv) {
   return options;
 }
 
-function readPayloadFile(filePath) {
+function stripUtf8Bom(text) {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+export function readPayloadFile(filePath) {
   const resolvedPath = path.resolve(filePath);
-  const raw = fs.readFileSync(resolvedPath, 'utf8');
+  const raw = stripUtf8Bom(fs.readFileSync(resolvedPath, 'utf8'));
   const parsed = JSON.parse(raw);
   if (!parsed || typeof parsed !== 'object') {
     throw new Error(`Payload file must contain a JSON object: ${resolvedPath}`);
   }
   return parsed;
+}
+
+function containsNonAscii(value) {
+  return typeof value === 'string' && /[^\x00-\x7F]/.test(value);
+}
+
+function assertAsciiSafeCliContent(options) {
+  const unsafeFlags = [
+    ['--overview', options.overview],
+    ['--results', options.results],
+    ['--next-step', options.nextStep],
+    ['--session-name', options.sessionName],
+  ].filter(([, value]) => containsNonAscii(value));
+
+  if (unsafeFlags.length === 0) {
+    return;
+  }
+
+  const flagList = unsafeFlags.map(([flag]) => flag).join(', ');
+  throw new Error(
+    `Non-ASCII notification content was provided through CLI flags (${flagList}). Use --payload-file with a UTF-8 JSON file instead.`,
+  );
 }
 
 function mergeOptionsWithPayload(options, payload) {
@@ -201,6 +229,7 @@ function buildMessage({ sessionId, sessionName, overview, results, nextStep }) {
 
 async function main() {
   const parsedOptions = parseArgs(process.argv.slice(2));
+  assertAsciiSafeCliContent(parsedOptions);
   const options = parsedOptions.payloadFile
     ? mergeOptionsWithPayload(parsedOptions, readPayloadFile(parsedOptions.payloadFile))
     : parsedOptions;
@@ -208,34 +237,48 @@ async function main() {
   const results = requireText(options.results, '--results');
   const nextStep = requireText(options.nextStep, '--next-step');
   const db = openDatabase(options.stateDb || defaultStateDb);
-  const account = resolveAccount(db, options);
-  const conversation = resolveConversation(db, account.account_id, options);
-  const contextToken = resolveContextToken(db, account.account_id, conversation.peer_user_id);
-  const sessionId = resolveSourceSessionId(options, conversation);
-  const sessionName = await resolveSessionName({
-    sessionId,
-    sessionName: options.sessionName,
-  });
-  const text = buildMessage({ sessionId, sessionName, overview, results, nextStep });
+  try {
+    const account = resolveAccount(db, options);
+    const conversation = resolveConversation(db, account.account_id, options);
+    const contextToken = resolveContextToken(db, account.account_id, conversation.peer_user_id);
+    const sessionId = resolveSourceSessionId(options, conversation);
+    const sessionName = await resolveSessionName({
+      sessionId,
+      sessionName: options.sessionName,
+    });
+    const text = buildMessage({ sessionId, sessionName, overview, results, nextStep });
 
-  if (options.dryRun) {
-    console.log(text);
-    return;
+    if (options.dryRun) {
+      console.log(text);
+      return;
+    }
+
+    const config = loadBridgeConfig(pluginRoot);
+    const stateStore = createStateStore({ databasePath: options.stateDb || defaultStateDb });
+    try {
+      const service = new BridgeService({
+        ...config,
+        workspaceDir: pluginRoot,
+      }, stateStore);
+      const result = await service.sendTextMessage({
+      accountId: account.account_id,
+      peerUserId: conversation.peer_user_id,
+      contextToken,
+      text,
+    });
+    console.log(JSON.stringify({
+      ok: true,
+      messageId: result.messageId,
+      status: result.status || 'sent',
+      sessionId,
+      sessionName,
+      }));
+    } finally {
+      stateStore.close();
+    }
+  } finally {
+    db.close();
   }
-
-  const client = new HttpWeixinClient({
-    baseUrl: account.base_url,
-    token: account.token,
-    ilinkAppId: 'bot',
-    ilinkBotType: '3',
-    clientVersion: 0x000100,
-  });
-  const result = await client.sendTextMessage({
-    peerUserId: conversation.peer_user_id,
-    contextToken,
-    text,
-  });
-  console.log(JSON.stringify({ ok: true, messageId: result.messageId, sessionId, sessionName }));
 }
 
 if (invokedScriptUrl === currentScriptUrl) {

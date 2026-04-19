@@ -1,9 +1,13 @@
 import {
   buildAuthenticatedHeaders,
+  buildFileMessageRequest,
+  buildGetUploadUrlRequest,
+  buildImageMessageRequest,
   buildSendMessageRequest,
   HttpWeixinClient,
   buildSendTypingRequest,
   TypingState,
+  UploadMediaType,
 } from "../../src/weixin/weixin-api-client.js";
 
 describe("Weixin API request builders", () => {
@@ -44,6 +48,96 @@ describe("Weixin API request builders", () => {
           {
             type: 1,
             text_item: { text: "Hello from Codex" },
+          },
+        ],
+      },
+    });
+  });
+
+  test("builds an upload-url request for outbound media", () => {
+    expect(buildGetUploadUrlRequest({
+      fileKey: "file-1",
+      mediaType: UploadMediaType.FILE,
+      toUserId: "user-a@im.wechat",
+      rawSize: 123,
+      rawFileMd5: "abc",
+      cipherSize: 128,
+      aesKeyHex: "00112233445566778899aabbccddeeff",
+      noNeedThumb: true,
+    })).toEqual({
+      filekey: "file-1",
+      media_type: 3,
+      to_user_id: "user-a@im.wechat",
+      rawsize: 123,
+      rawfilemd5: "abc",
+      filesize: 128,
+      no_need_thumb: true,
+      aeskey: "00112233445566778899aabbccddeeff",
+    });
+  });
+
+  test("builds an outbound image message request", () => {
+    expect(buildImageMessageRequest({
+      toUserId: "user-a@im.wechat",
+      clientId: "client-1",
+      contextToken: "ctx-1",
+      encryptQueryParam: "enc-1",
+      aesKeyBase64: "YWVzLWtleQ==",
+      cipherSize: 4096,
+    })).toEqual({
+      msg: {
+        from_user_id: "",
+        to_user_id: "user-a@im.wechat",
+        client_id: "client-1",
+        message_type: 2,
+        message_state: 2,
+        context_token: "ctx-1",
+        item_list: [
+          {
+            type: 2,
+            image_item: {
+              media: {
+                encrypt_query_param: "enc-1",
+                aes_key: "YWVzLWtleQ==",
+                encrypt_type: 1,
+              },
+              mid_size: 4096,
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  test("builds an outbound file message request", () => {
+    expect(buildFileMessageRequest({
+      toUserId: "user-a@im.wechat",
+      clientId: "client-2",
+      contextToken: "ctx-2",
+      fileName: "report.pdf",
+      encryptQueryParam: "enc-2",
+      aesKeyBase64: "YWVzLWtleQ==",
+      plainSize: 2048,
+    })).toEqual({
+      msg: {
+        from_user_id: "",
+        to_user_id: "user-a@im.wechat",
+        client_id: "client-2",
+        message_type: 2,
+        message_state: 2,
+        context_token: "ctx-2",
+        item_list: [
+          {
+            type: 4,
+            file_item: {
+              media: {
+                encrypt_query_param: "enc-2",
+                aes_key: "YWVzLWtleQ==",
+                encrypt_type: 1,
+              },
+              file_name: "report.pdf",
+              len: "2048",
+            },
           },
         ],
       },
@@ -136,6 +230,101 @@ describe("Weixin API request builders", () => {
 
     expect(firstBody.msg.client_id).toBeTruthy();
     expect(secondBody.msg.client_id).toBe(firstBody.msg.client_id);
+
+    globalThis.fetch = originalFetch;
+  });
+
+  test("requests upload parameters for outbound media", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ upload_full_url: "https://cdn.example/upload" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    const client = new HttpWeixinClient({
+      baseUrl: "https://example.test/",
+      token: "token",
+      appId: "app-id",
+      clientVersion: 65547,
+      packageVersion: "0.1.0",
+    });
+
+    const result = await client.getUploadUrl({
+      fileKey: "file-1",
+      mediaType: UploadMediaType.FILE,
+      toUserId: "user-a@im.wechat",
+      rawSize: 123,
+      rawFileMd5: "abc",
+      cipherSize: 128,
+      aesKeyHex: "00112233445566778899aabbccddeeff",
+      noNeedThumb: true,
+    });
+
+    expect(result).toEqual({ uploadFullUrl: "https://cdn.example/upload" });
+
+    const uploadCalls = fetchMock.mock.calls as unknown as Array<[unknown, RequestInit | undefined]>;
+    const uploadRequest = uploadCalls[0]?.[1];
+    const body = JSON.parse(String(uploadRequest?.body));
+    expect(body).toMatchObject({
+      filekey: "file-1",
+      media_type: 3,
+      to_user_id: "user-a@im.wechat",
+      rawsize: 123,
+      rawfilemd5: "abc",
+      filesize: 128,
+      no_need_thumb: true,
+      aeskey: "00112233445566778899aabbccddeeff",
+    });
+
+    globalThis.fetch = originalFetch;
+  });
+
+  test("sends an outbound file item", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ ret: 0 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    const client = new HttpWeixinClient({
+      baseUrl: "https://example.test/",
+      token: "token",
+      appId: "app-id",
+      clientVersion: 65547,
+      packageVersion: "0.1.0",
+    });
+
+    const result = await client.sendFileMessage({
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-1",
+      fileName: "report.pdf",
+      encryptQueryParam: "enc-1",
+      aesKeyBase64: "YWVzLWtleQ==",
+      plainSize: 2048,
+    });
+
+    expect(result.messageId).toBeTruthy();
+    const sendCalls = fetchMock.mock.calls as unknown as Array<[unknown, RequestInit | undefined]>;
+    const sendRequest = sendCalls[0]?.[1];
+    const body = JSON.parse(String(sendRequest?.body));
+    expect(body.msg.item_list[0]).toEqual({
+      type: 4,
+      file_item: {
+        media: {
+          encrypt_query_param: "enc-1",
+          aes_key: "YWVzLWtleQ==",
+          encrypt_type: 1,
+        },
+        file_name: "report.pdf",
+        len: "2048",
+      },
+    });
 
     globalThis.fetch = originalFetch;
   });

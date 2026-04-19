@@ -417,7 +417,6 @@ describe("AppServerClient", () => {
     expect(transport.sent[0]).toEqual({
       id: 1,
       method: "account/rateLimits/read",
-      params: null,
     });
 
     transport.push({

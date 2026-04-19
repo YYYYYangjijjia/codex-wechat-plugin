@@ -1,6 +1,6 @@
 {
   "name": "codex-wechat-plugin",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Local Codex Desktop + WeChat bridge with a daemon, MCP server, and Codex plugin bundle.",
   "type": "module",

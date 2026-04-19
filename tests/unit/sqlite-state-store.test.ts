@@ -129,4 +129,55 @@ describe("SQLite state store", () => {
 
     store.close();
   });
+
+  test("persists queued outbound deliveries across reopen", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "wechat-bridge-store-"));
+    const databasePath = path.join(tempDir, "bridge.sqlite");
+
+    const first = createStateStore({ databasePath });
+    const deliveryId = first.enqueueOutboundDelivery({
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-1",
+      kind: "text",
+      payload: {
+        text: "<FINAL>:\nqueued summary",
+      },
+      status: "waiting_for_fresh_context",
+      errorMessage: "sendmessage failed: ret=-2",
+    });
+    first.close();
+
+    const reopened = createStateStore({ databasePath });
+    expect(reopened.listOutboundDeliveries(["waiting_for_fresh_context"])).toEqual([
+      expect.objectContaining({
+        id: deliveryId,
+        conversationKey: "acct-1:user-a@im.wechat",
+        accountId: "acct-1",
+        peerUserId: "user-a@im.wechat",
+        contextToken: "ctx-1",
+        kind: "text",
+        status: "waiting_for_fresh_context",
+        errorMessage: "sendmessage failed: ret=-2",
+        payload: {
+          text: "<FINAL>:\nqueued summary",
+        },
+      }),
+    ]);
+
+    reopened.markOutboundDeliveryStatus(deliveryId, {
+      status: "sent",
+      errorMessage: undefined,
+    });
+
+    expect(reopened.listOutboundDeliveries(["sent"])).toEqual([
+      expect.objectContaining({
+        id: deliveryId,
+        status: "sent",
+      }),
+    ]);
+
+    reopened.close();
+  });
 });

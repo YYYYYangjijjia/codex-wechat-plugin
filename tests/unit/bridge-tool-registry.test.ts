@@ -14,6 +14,7 @@ describe("createBridgeToolRegistry", () => {
       listConversations: vi.fn(),
       peekPendingMessages: vi.fn(),
       sendTextMessage: vi.fn(),
+      sendFileMessage: vi.fn(),
       setTypingState: vi.fn(),
       retryDelivery: vi.fn(),
       getDiagnostics: vi.fn(),
@@ -41,6 +42,7 @@ describe("createBridgeToolRegistry", () => {
         { id: 11, conversationKey: "acct:user", prompt: "hello", status: "pending" },
       ]),
       sendTextMessage: vi.fn(),
+      sendFileMessage: vi.fn(),
       setTypingState: vi.fn(),
       retryDelivery: vi.fn(),
       getDiagnostics: vi.fn(),
@@ -56,13 +58,14 @@ describe("createBridgeToolRegistry", () => {
     });
   });
 
-  it("surfaces send_image_message as a documented phase-2 placeholder", async () => {
+  it("dispatches send_image_message to the bridge service", async () => {
     const service = {
       login: vi.fn(),
       getLoginStatus: vi.fn(),
       listConversations: vi.fn(),
       peekPendingMessages: vi.fn(),
       sendTextMessage: vi.fn(),
+      sendFileMessage: vi.fn(async () => ({ messageId: "media-1", kind: "image" as const })),
       setTypingState: vi.fn(),
       retryDelivery: vi.fn(),
       getDiagnostics: vi.fn(),
@@ -76,10 +79,54 @@ describe("createBridgeToolRegistry", () => {
       image_path: "D:\\tmp\\a.png",
     });
 
-    expect(result.isError).toBe(true);
+    expect(service.sendFileMessage).toHaveBeenCalledWith({
+      accountId: "wx-1",
+      peerUserId: "user-1",
+      filePath: "D:\\tmp\\a.png",
+      contextToken: undefined,
+      captionText: undefined,
+    });
+    expect(result.isError).toBeUndefined();
     expect(result.structuredContent).toEqual({
-      status: "not_implemented",
-      phase: "phase_2",
+      message_id: "media-1",
+      status: "sent",
+      kind: "image",
+    });
+  });
+
+  it("dispatches send_file_message to the bridge service", async () => {
+    const service = {
+      login: vi.fn(),
+      getLoginStatus: vi.fn(),
+      listConversations: vi.fn(),
+      peekPendingMessages: vi.fn(),
+      sendTextMessage: vi.fn(),
+      sendFileMessage: vi.fn(async () => ({ messageId: "media-2", kind: "file" as const })),
+      setTypingState: vi.fn(),
+      retryDelivery: vi.fn(),
+      getDiagnostics: vi.fn(),
+      getAccountState: vi.fn(),
+    };
+
+    const registry = createBridgeToolRegistry(service);
+    const result = await registry.send_file_message!.execute({
+      account_id: "wx-1",
+      peer_user_id: "user-1",
+      file_path: "D:\\tmp\\report.pdf",
+      caption_text: "Here is the report",
+    });
+
+    expect(service.sendFileMessage).toHaveBeenCalledWith({
+      accountId: "wx-1",
+      peerUserId: "user-1",
+      filePath: "D:\\tmp\\report.pdf",
+      contextToken: undefined,
+      captionText: "Here is the report",
+    });
+    expect(result.structuredContent).toEqual({
+      message_id: "media-2",
+      status: "sent",
+      kind: "file",
     });
   });
 });

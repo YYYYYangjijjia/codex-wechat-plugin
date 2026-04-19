@@ -23,7 +23,14 @@ export type BridgeToolService = {
   getLoginStatus(sessionKey: string): Promise<Record<string, unknown>>;
   listConversations(): unknown[];
   peekPendingMessages(statuses?: PendingMessageRecord["status"][]): PendingMessageRecord[];
-  sendTextMessage(input: { accountId: string; peerUserId: string; text: string; contextToken?: string | undefined }): Promise<{ messageId: string }>;
+  sendTextMessage(input: { accountId: string; peerUserId: string; text: string; contextToken?: string | undefined }): Promise<{ messageId: string; status?: "queued" | "sent" }>;
+  sendFileMessage(input: {
+    accountId: string;
+    peerUserId: string;
+    filePath: string;
+    contextToken?: string | undefined;
+    captionText?: string | undefined;
+  }): Promise<{ messageId: string; kind: "image" | "file"; status?: "queued" | "sent" }>;
   setTypingState(input: { accountId: string; peerUserId: string; state: "start" | "stop"; typingTicket?: string | undefined }): Promise<{ status: string }>;
   retryDelivery(pendingMessageId: number): Promise<{ pendingMessageId: number; status: string }>;
   getDiagnostics(limit?: number): unknown[];
@@ -111,25 +118,61 @@ export function createBridgeToolRegistry(service: BridgeToolService): BridgeTool
           text: parsed.text,
           contextToken: parsed.context_token,
         });
-        return toToolResult({ message_id: result.messageId, status: "sent" });
+        return toToolResult({ message_id: result.messageId, status: result.status ?? "sent" });
       },
     },
     send_image_message: {
-      description: "Phase-2 placeholder for WeChat image sending. Not implemented in v1.",
+      description: "Send a local image file into a specific WeChat private chat.",
       inputSchema: {
         account_id: z.string().trim().min(1),
         peer_user_id: z.string().trim().min(1),
         image_path: z.string().trim().min(1),
         context_token: z.string().trim().min(1).optional(),
+        caption_text: z.string().min(1).optional(),
       },
-      async execute() {
-        return toToolResult(
-          {
-            status: "not_implemented",
-            phase: "phase_2",
-          },
-          true,
-        );
+      async execute(args) {
+        const parsed = z.object({
+          account_id: z.string().trim().min(1),
+          peer_user_id: z.string().trim().min(1),
+          image_path: z.string().trim().min(1),
+          context_token: z.string().trim().min(1).optional(),
+          caption_text: z.string().min(1).optional(),
+        }).parse(args);
+        const result = await service.sendFileMessage({
+          accountId: parsed.account_id,
+          peerUserId: parsed.peer_user_id,
+          filePath: parsed.image_path,
+          contextToken: parsed.context_token,
+          captionText: parsed.caption_text,
+        });
+        return toToolResult({ message_id: result.messageId, status: result.status ?? "sent", kind: result.kind });
+      },
+    },
+    send_file_message: {
+      description: "Send a local file attachment into a specific WeChat private chat.",
+      inputSchema: {
+        account_id: z.string().trim().min(1),
+        peer_user_id: z.string().trim().min(1),
+        file_path: z.string().trim().min(1),
+        context_token: z.string().trim().min(1).optional(),
+        caption_text: z.string().min(1).optional(),
+      },
+      async execute(args) {
+        const parsed = z.object({
+          account_id: z.string().trim().min(1),
+          peer_user_id: z.string().trim().min(1),
+          file_path: z.string().trim().min(1),
+          context_token: z.string().trim().min(1).optional(),
+          caption_text: z.string().min(1).optional(),
+        }).parse(args);
+        const result = await service.sendFileMessage({
+          accountId: parsed.account_id,
+          peerUserId: parsed.peer_user_id,
+          filePath: parsed.file_path,
+          contextToken: parsed.context_token,
+          captionText: parsed.caption_text,
+        });
+        return toToolResult({ message_id: result.messageId, status: result.status ?? "sent", kind: result.kind });
       },
     },
     set_typing_state: {

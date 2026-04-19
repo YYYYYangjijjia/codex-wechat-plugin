@@ -28,7 +28,6 @@ Use this skill when working with the local WeChat / Weixin bridge plugin in the 
 - Before sending a manual reply, inspect `list_conversations` or `fetch_updates` and verify the exact peer.
 - Do not assume two contacts with similar names are interchangeable.
 - Do not use `send_text_message` unless you have a concrete `account_id` and `peer_user_id`.
-- Do not attempt image sending in v1. `send_image_message` is a phase-2 placeholder.
 - If login has expired, run `login`, scan the QR code, then poll `get_login_status`.
 
 ## Recommended operating sequence
@@ -37,7 +36,7 @@ Use this skill when working with the local WeChat / Weixin bridge plugin in the 
 2. If there is no active account, call `login`, scan the QR code, then poll `get_login_status`.
 3. Call `fetch_updates` to inspect pending inbound messages if you need to diagnose or manually intervene.
 4. Call `list_conversations` if you need the Codex thread mapping.
-5. Only then call `send_text_message` or `retry_delivery`.
+5. Only then call `send_text_message`, `send_image_message`, `send_file_message`, or `retry_delivery`.
 
 ## Tool notes
 
@@ -47,6 +46,8 @@ Use this skill when working with the local WeChat / Weixin bridge plugin in the 
 - `set_typing_state`: manual override for typing status.
 - `get_diagnostics`: inspect recent errors such as `session_expired`, `poll_error`, `reply_failed`.
 - `list_conversations`: inspect the persisted WeChat-to-Codex mapping state.
+- `send_image_message`: send a local image file into a specific private chat.
+- `send_file_message`: send a local file attachment into a specific private chat.
 
 ## Known limits
 
@@ -54,4 +55,4 @@ Use this skill when working with the local WeChat / Weixin bridge plugin in the 
 - `typing + segmented partial replies + final remainder` only. No token-level streaming and no true generating/finish parity.
 - `/append` only works while the active task is running on the app-server backend.
 - `/model` and `/effort` are bridge-local runtime overrides; they do not rewrite global Codex config.
-- Image sending is not implemented yet.
+- Outbound delivery still depends on a fresh valid reply context.

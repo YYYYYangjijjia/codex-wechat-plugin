@@ -68,6 +68,27 @@ export type DeliveryRecord = {
   createdAt: string;
 };
 
+export type OutboundDeliveryKind = "text" | "file";
+export type OutboundDeliveryStatus = "pending" | "waiting_for_fresh_context" | "sent" | "failed";
+
+export type OutboundDeliveryPayload =
+  | { text: string }
+  | { filePath: string };
+
+export type OutboundDeliveryRecord = {
+  id: number;
+  conversationKey: string;
+  accountId: string;
+  peerUserId: string;
+  contextToken?: string | undefined;
+  kind: OutboundDeliveryKind;
+  payload: OutboundDeliveryPayload;
+  status: OutboundDeliveryStatus;
+  errorMessage?: string | undefined;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type StateStore = {
   close(): void;
   savePollState(state: PollState): void;
@@ -125,6 +146,24 @@ export type StateStore = {
   ): void;
   recordDeliveryAttempt(entry: { conversationKey: string; status: string; errorMessage?: string | undefined; prompt?: string | undefined; finalMessage?: string | undefined; peerUserId?: string | undefined; contextToken?: string | undefined; threadId?: string | undefined }): void;
   listDeliveries(limit?: number): DeliveryRecord[];
+  enqueueOutboundDelivery(entry: {
+    conversationKey: string;
+    accountId: string;
+    peerUserId: string;
+    contextToken?: string | undefined;
+    kind: OutboundDeliveryKind;
+    payload: OutboundDeliveryPayload;
+    status?: OutboundDeliveryStatus | undefined;
+    errorMessage?: string | undefined;
+  }): number;
+  listOutboundDeliveries(statuses?: OutboundDeliveryStatus[], conversationKey?: string): OutboundDeliveryRecord[];
+  markOutboundDeliveryStatus(
+    id: number,
+    update: {
+      status: OutboundDeliveryStatus;
+      errorMessage?: string | undefined;
+    },
+  ): void;
   saveRuntimeState(key: string, value: unknown): void;
   getRuntimeState(key: string): unknown;
   recordDiagnostic(entry: { code: string; accountId?: string | undefined; detail?: string | undefined }): void;
@@ -221,6 +260,20 @@ export function createStateStore(input: { databasePath: string }): StateStore {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS outbound_deliveries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_key TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      peer_user_id TEXT NOT NULL,
+      context_token TEXT,
+      kind TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS diagnostic_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       code TEXT NOT NULL,
@@ -298,6 +351,21 @@ export function createStateStore(input: { databasePath: string }): StateStore {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const listDeliveriesStmt = db.prepare(`SELECT id, conversation_key, status, error_message, prompt, final_message, peer_user_id, context_token, thread_id, created_at FROM deliveries ORDER BY id DESC LIMIT ?`);
+  const insertOutboundDeliveryStmt = db.prepare(`
+    INSERT INTO outbound_deliveries (conversation_key, account_id, peer_user_id, context_token, kind, payload_json, status, error_message, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const listOutboundDeliveriesStmt = db.prepare(`
+    SELECT id, conversation_key, account_id, peer_user_id, context_token, kind, payload_json, status, error_message, created_at, updated_at
+    FROM outbound_deliveries
+    WHERE (? IS NULL OR conversation_key = ?)
+    ORDER BY id ASC
+  `);
+  const updateOutboundDeliveryStmt = db.prepare(`
+    UPDATE outbound_deliveries
+    SET status = ?, error_message = ?, updated_at = ?
+    WHERE id = ?
+  `);
   const upsertRuntimeStateStmt = db.prepare(`
     INSERT INTO runtime_state (state_key, json_value, updated_at)
     VALUES (?, ?, ?)
@@ -346,6 +414,43 @@ export function createStateStore(input: { databasePath: string }): StateStore {
       runnerCwd: row.runner_cwd ?? undefined,
       threadId: row.thread_id ?? row.runner_thread_id ?? undefined,
       status: row.status as PendingMessageRecord["status"],
+      errorMessage: row.error_message ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  function mapOutboundDeliveryRow(row: {
+    id: number;
+    conversation_key: string;
+    account_id: string;
+    peer_user_id: string;
+    context_token: string | null;
+    kind: string;
+    payload_json: string;
+    status: string;
+    error_message: string | null;
+    created_at: string;
+    updated_at: string;
+  }): OutboundDeliveryRecord {
+    let payload: OutboundDeliveryPayload = { text: "" };
+    try {
+      const parsed = JSON.parse(row.payload_json) as OutboundDeliveryPayload;
+      if (parsed && typeof parsed === "object") {
+        payload = parsed;
+      }
+    } catch {
+      payload = row.kind === "file" ? { filePath: "" } : { text: "" };
+    }
+    return {
+      id: row.id,
+      conversationKey: row.conversation_key,
+      accountId: row.account_id,
+      peerUserId: row.peer_user_id,
+      contextToken: row.context_token ?? undefined,
+      kind: row.kind as OutboundDeliveryKind,
+      payload,
+      status: row.status as OutboundDeliveryStatus,
       errorMessage: row.error_message ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -509,6 +614,50 @@ export function createStateStore(input: { databasePath: string }): StateStore {
         threadId: row.thread_id ?? undefined,
         createdAt: row.created_at,
       }));
+    },
+    enqueueOutboundDelivery(entry): number {
+      const now = new Date().toISOString();
+      const result = insertOutboundDeliveryStmt.run(
+        entry.conversationKey,
+        entry.accountId,
+        entry.peerUserId,
+        entry.contextToken ?? null,
+        entry.kind,
+        JSON.stringify(entry.payload),
+        entry.status ?? "pending",
+        entry.errorMessage ?? null,
+        now,
+        now,
+      );
+      return Number(result.lastInsertRowid);
+    },
+    listOutboundDeliveries(statuses, conversationKey): OutboundDeliveryRecord[] {
+      const rows = listOutboundDeliveriesStmt.all(conversationKey ?? null, conversationKey ?? null) as Array<{
+        id: number;
+        conversation_key: string;
+        account_id: string;
+        peer_user_id: string;
+        context_token: string | null;
+        kind: string;
+        payload_json: string;
+        status: string;
+        error_message: string | null;
+        created_at: string;
+        updated_at: string;
+      }>;
+      const mapped = rows.map(mapOutboundDeliveryRow);
+      if (!statuses || statuses.length === 0) {
+        return mapped;
+      }
+      return mapped.filter((row) => statuses.includes(row.status));
+    },
+    markOutboundDeliveryStatus(id, update): void {
+      updateOutboundDeliveryStmt.run(
+        update.status,
+        update.errorMessage ?? null,
+        new Date().toISOString(),
+        id,
+      );
     },
     saveRuntimeState(key: string, value: unknown): void {
       upsertRuntimeStateStmt.run(key, JSON.stringify(value), new Date().toISOString());

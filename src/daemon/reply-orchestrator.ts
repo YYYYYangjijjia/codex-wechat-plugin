@@ -1,8 +1,22 @@
 import { CodexTurnInterruptedError, type CodexRunner, type RunnerBackend } from "../codex/codex-runner.js";
+import { sendLocalMediaFile } from "../weixin/outbound-media.js";
 import type { WeixinClient } from "../weixin/weixin-api-client.js";
+import { extractDeliveredFileMarkers, stripDeliveredFileMarkers } from "./delivery-guidance.js";
+import type { DeliveryIntent } from "./delivery-intent.js";
+import { resolveDeliveryCandidates } from "./outbound-delivery.js";
 
 export type DeliveryRecorder = {
   recordDeliveryAttempt(input: { conversationKey: string; status: string; errorMessage?: string | undefined; finalMessage?: string | undefined }): void;
+  enqueueOutboundDelivery(input: {
+    conversationKey: string;
+    accountId: string;
+    peerUserId: string;
+    contextToken?: string | undefined;
+    kind: "text" | "file";
+    payload: { text: string } | { filePath: string };
+    status?: "pending" | "waiting_for_fresh_context" | "sent" | "failed";
+    errorMessage?: string | undefined;
+  }): number;
 };
 
 const MAX_FINAL_MESSAGE_CHARS = 1200;
@@ -23,6 +37,7 @@ export type ReplyOrchestrator = {
     model?: string | undefined;
     reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | undefined;
     showFinalSummary?: boolean | undefined;
+    deliveryIntent?: DeliveryIntent | undefined;
     signal?: AbortSignal | undefined;
     onIdleTimeout?: Parameters<CodexRunner["runTurn"]>[0]["onIdleTimeout"];
     onTurnStarted?: Parameters<CodexRunner["runTurn"]>[0]["onTurnStarted"];
@@ -45,7 +60,7 @@ export type ReplyOrchestrator = {
 export function createReplyOrchestrator(input: {
   stateStore: DeliveryRecorder;
   codexRunner: CodexRunner;
-  weixinClient: WeixinClient;
+  weixinClient: Pick<WeixinClient, "setTyping" | "stopTyping" | "sendTextMessage"> & Partial<Pick<WeixinClient, "getUploadUrl" | "sendImageMessage" | "sendFileMessage">>;
 }): ReplyOrchestrator {
   return {
     async handleInboundMessage(message) {
@@ -280,17 +295,32 @@ export function createReplyOrchestrator(input: {
           : "";
         const outbound = finalText
           ? await sendFinalSummary({
+              stateStore: input.stateStore,
+              conversationKey: message.conversationKey,
+              accountId: message.accountId,
               weixinClient: input.weixinClient,
               peerUserId: message.peerUserId,
               contextToken: message.contextToken,
               finalText,
             })
           : { messageId: "progress-only" };
+        const mediaOutbound = await deliverRequestedMediaIfAny({
+          weixinClient: input.weixinClient,
+          conversationKey: message.conversationKey,
+          accountId: message.accountId,
+          peerUserId: message.peerUserId,
+          contextToken: message.contextToken,
+          finalMessage: result.finalMessage,
+          workspaceDir: result.cwd,
+          deliveryIntent: message.deliveryIntent,
+          taskStartedAtMs: startedAt,
+          stateStore: input.stateStore,
+        });
         sendMs = Date.now() - sendStartedAt;
 
         input.stateStore.recordDeliveryAttempt({
           conversationKey: message.conversationKey,
-          status: "sent",
+          status: outbound.messageId.startsWith("queued:") ? "sent_deferred" : "sent",
           finalMessage: finalText || undefined,
         });
 
@@ -299,7 +329,7 @@ export function createReplyOrchestrator(input: {
           threadId: result.threadId,
           cwd: result.cwd,
           finalMessage: result.finalMessage,
-          outboundMessageId: outbound.messageId,
+          outboundMessageId: mediaOutbound?.messageId ?? outbound.messageId,
           timings: {
             typingStartMs,
             runnerMs,
@@ -452,7 +482,10 @@ function buildVisibleFinalSummary(finalMessage: string, emittedAnswerProseParts:
 }
 
 async function sendFinalSummary(input: {
-  weixinClient: WeixinClient;
+  stateStore: DeliveryRecorder;
+  conversationKey: string;
+  accountId: string;
+  weixinClient: Pick<WeixinClient, "sendTextMessage">;
   peerUserId: string;
   contextToken: string;
   finalText: string;
@@ -463,23 +496,40 @@ async function sendFinalSummary(input: {
     const text = parts.length === 1
       ? formatFinalAnswerChunk(parts[index]!)
       : formatFinalAnswerChunkPart(parts[index]!, index + 1, parts.length);
-    const outbound = await sendTextMessageWithRetry({
-      weixinClient: input.weixinClient,
-      peerUserId: input.peerUserId,
-      contextToken: input.contextToken,
-      text,
-      fatal: true,
-    });
-    if (!outbound) {
-      throw new Error("Final summary delivery unexpectedly returned no outbound message id.");
+    try {
+      const outbound = await sendTextMessageWithRetry({
+        weixinClient: input.weixinClient,
+        peerUserId: input.peerUserId,
+        contextToken: input.contextToken,
+        text,
+        fatal: true,
+      });
+      if (!outbound) {
+        throw new Error("Final summary delivery unexpectedly returned no outbound message id.");
+      }
+      lastMessageId = outbound.messageId;
+    } catch (error) {
+      if (!isReplyContextExpiredError(error)) {
+        throw error;
+      }
+      const deliveryId = input.stateStore.enqueueOutboundDelivery({
+        conversationKey: input.conversationKey,
+        accountId: input.accountId,
+        peerUserId: input.peerUserId,
+        contextToken: input.contextToken,
+        kind: "text",
+        payload: { text },
+        status: "waiting_for_fresh_context",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      return { messageId: `queued:${deliveryId}` };
     }
-    lastMessageId = outbound.messageId;
   }
   return { messageId: lastMessageId };
 }
 
 async function sendTextMessageWithRetry(input: {
-  weixinClient: WeixinClient;
+  weixinClient: Pick<WeixinClient, "sendTextMessage">;
   peerUserId: string;
   contextToken: string;
   text: string;
@@ -506,11 +556,156 @@ async function sendTextMessageWithRetry(input: {
   return undefined;
 }
 
+async function deliverRequestedMediaIfAny(input: {
+  weixinClient: Pick<WeixinClient, "sendTextMessage"> & Partial<Pick<WeixinClient, "getUploadUrl" | "sendImageMessage" | "sendFileMessage">>;
+  conversationKey: string;
+  peerUserId: string;
+  contextToken: string;
+  finalMessage: string;
+  workspaceDir: string;
+  deliveryIntent?: DeliveryIntent | undefined;
+  accountId: string;
+  taskStartedAtMs: number;
+  stateStore: DeliveryRecorder;
+}): Promise<{ messageId: string } | undefined> {
+  if (!input.deliveryIntent?.enabled) {
+    return undefined;
+  }
+
+  const skillDeliveredPaths = extractDeliveredFileMarkers(input.finalMessage);
+  if (skillDeliveredPaths.length > 0) {
+    for (const filePath of skillDeliveredPaths) {
+      input.stateStore.recordDeliveryAttempt({
+        conversationKey: input.conversationKey,
+        status: "media_sent_via_skill",
+        finalMessage: filePath,
+      });
+    }
+    return undefined;
+  }
+
+  if (!input.weixinClient.getUploadUrl || !input.weixinClient.sendImageMessage || !input.weixinClient.sendFileMessage) {
+    await sendMediaFallbackText({
+      weixinClient: input.weixinClient,
+      peerUserId: input.peerUserId,
+      contextToken: input.contextToken,
+      text: "已识别到本轮需要回传文件，但当前 bridge 未启用媒体发送能力。本轮先返回文本结果。",
+    });
+    input.stateStore.recordDeliveryAttempt({
+      conversationKey: input.conversationKey,
+      status: "media_delivery_degraded",
+      errorMessage: "Media delivery capability is unavailable.",
+    });
+    return undefined;
+  }
+
+  const resolution = resolveDeliveryCandidates({
+    workspaceDir: input.workspaceDir,
+    finalMessage: input.finalMessage,
+    requestedKinds: input.deliveryIntent.requestedKinds,
+    taskStartedAtMs: input.taskStartedAtMs,
+  });
+
+  if (resolution.status !== "ready") {
+    await sendMediaFallbackText({
+      weixinClient: input.weixinClient,
+      peerUserId: input.peerUserId,
+      contextToken: input.contextToken,
+      text: resolution.notice,
+    });
+    input.stateStore.recordDeliveryAttempt({
+      conversationKey: input.conversationKey,
+      status: "media_delivery_degraded",
+      errorMessage: resolution.notice,
+      finalMessage: resolution.status === "ambiguous" ? resolution.candidates.join("\n") : undefined,
+    });
+    return undefined;
+  }
+
+  let lastMessageId: string | undefined;
+  try {
+    for (const filePath of resolution.files) {
+      const outbound = await sendLocalMediaFile({
+        client: {
+          getUploadUrl: input.weixinClient.getUploadUrl.bind(input.weixinClient),
+          sendImageMessage: input.weixinClient.sendImageMessage.bind(input.weixinClient),
+          sendFileMessage: input.weixinClient.sendFileMessage.bind(input.weixinClient),
+        },
+        peerUserId: input.peerUserId,
+        contextToken: input.contextToken,
+        filePath,
+      });
+      lastMessageId = outbound.messageId;
+      input.stateStore.recordDeliveryAttempt({
+        conversationKey: input.conversationKey,
+        status: "media_sent",
+        finalMessage: filePath,
+      });
+    }
+    return lastMessageId ? { messageId: lastMessageId } : undefined;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isReplyContextExpiredError(error) && resolution.status === "ready") {
+      let lastQueuedId: number | undefined;
+      for (const filePath of resolution.files) {
+        lastQueuedId = input.stateStore.enqueueOutboundDelivery({
+          conversationKey: input.conversationKey,
+          accountId: input.accountId,
+          peerUserId: input.peerUserId,
+          contextToken: input.contextToken,
+          kind: "file",
+          payload: { filePath },
+          status: "waiting_for_fresh_context",
+          errorMessage: message,
+        });
+        input.stateStore.recordDeliveryAttempt({
+          conversationKey: input.conversationKey,
+          status: "media_queued",
+          errorMessage: message,
+          finalMessage: filePath,
+        });
+      }
+      return lastQueuedId ? { messageId: `queued:${lastQueuedId}` } : undefined;
+    }
+    await sendMediaFallbackText({
+      weixinClient: input.weixinClient,
+      peerUserId: input.peerUserId,
+      contextToken: input.contextToken,
+      text: `文件回传失败，已保留文本结果。原因: ${message}`,
+    });
+    input.stateStore.recordDeliveryAttempt({
+      conversationKey: input.conversationKey,
+      status: "media_delivery_degraded",
+      errorMessage: message,
+    });
+    return undefined;
+  }
+}
+
+async function sendMediaFallbackText(input: {
+  weixinClient: Pick<WeixinClient, "sendTextMessage">;
+  peerUserId: string;
+  contextToken: string;
+  text: string;
+}): Promise<void> {
+  await sendTextMessageWithRetry({
+    weixinClient: input.weixinClient,
+    peerUserId: input.peerUserId,
+    contextToken: input.contextToken,
+    text: input.text,
+    fatal: false,
+  });
+}
+
 function isRetryableSendError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
   }
   return /fetch failed/i.test(error.message);
+}
+
+function isReplyContextExpiredError(error: unknown): boolean {
+  return error instanceof Error && /ret=-2|reply context is no longer valid|refresh context_token/i.test(error.message);
 }
 
 function splitFinalSummary(text: string, maxChars: number): string[] {
@@ -555,7 +750,7 @@ function stripStandaloneCodeFenceLines(text: string): string {
 }
 
 function normalizeFinalSummary(text: string): string {
-  const trimmed = text.trim();
+  const trimmed = stripDeliveredFileMarkers(text).trim();
   const fenced = trimmed.match(/^```[^\n]*\n([\s\S]*?)\n```$/);
   if (fenced) {
     return fenced[1]!.trim();

@@ -63,6 +63,11 @@ The intended operating model is:
 - segmented partial replies to avoid long periods of silent waiting, plus optional full summary via `/final`
 - structured block handling for fenced code, tables, lists, and attachment-style outputs
 - inbound image and file caching under the plugin runtime cache directory, with attachment-aware prompt injection
+- outbound local image / file delivery back to WeChat for explicit operator or MCP sends
+- intent-gated automatic file delivery when the WeChat user explicitly asks Codex to send the generated artifact back to WeChat
+- bridge prompt injection that exposes the bundled `deliver-file` skill only for explicitly authorized delivery turns
+- Codex-driven file choice via the bundled `deliver-file` skill, with bridge-side marker-based deduplication
+- text downgrade delivery when media sendback fails or the generated artifact cannot be resolved safely
 - WeChat-side control commands such as `/help`, `/session`, `/use-session`, `/append`, `/stop`, `/restart`, `/status`, `/quota`, `/model`, `/effort`, `/skills`
 - model / reasoning-effort overrides from WeChat
 - optional final-summary toggle from WeChat
@@ -72,7 +77,6 @@ The intended operating model is:
 ### Not Yet Implemented
 - group chat support
 - inbound voice-only message understanding
-- outbound image / file sending parity back to WeChat
 - merged chat-history forwarding support
 - full long-term unattended hardening beyond the current local runtime guardrails
 
@@ -250,7 +254,6 @@ npm run typecheck
 - `/yes` - confirm the current pending destructive action.
 - `/no` - cancel the current pending destructive action.
 - `/append <text>` - append steering text to the currently running task when supported.
-- `/fallback continue` - switch an idle timed-out `app_server` task to `exec` fallback only after you explicitly allow it.
 - `/stop` - stop the currently running task for this chat.
 - `/restart` - restart the current bridge daemon for this chat after the confirmation reply is sent.
 - `/pending` - show the current backlog review state for this chat.
@@ -277,6 +280,12 @@ Inbound image and file messages are downloaded into a local cache directory rela
 
 The bridge injects attachment metadata and local paths into the Codex prompt. This cache is runtime state and is intentionally gitignored.
 
+Outbound delivery is more conservative:
+- Codex does not send local files back to WeChat by default.
+- Automatic delivery is enabled only for the current turn when the WeChat user explicitly asks Codex to send the generated artifact back to WeChat.
+- Manual operator or MCP sends can push a specific local image or file path into the active private chat when a fresh reply context exists.
+- If media delivery fails, the bridge still attempts a text fallback instead of failing silently.
+
 ## Repository Layout
 
 - [`.codex-plugin/plugin.json`](./.codex-plugin/plugin.json): plugin manifest
@@ -286,6 +295,7 @@ The bridge injects attachment metadata and local paths into the Codex prompt. Th
 - [`scripts/install-codex-plugin.ps1`](./scripts/install-codex-plugin.ps1): local Codex plugin installer
 - [`scripts/install-tray-launcher.ps1`](./scripts/install-tray-launcher.ps1): tray + desktop shortcut installer
 - [`skills/wechat-bridge-ops/SKILL.md`](./skills/wechat-bridge-ops/SKILL.md): bundled operational skill (`wechat-bridge-ops`, displayed in Codex as `WeChat Bridge:OPS`)
+- [`skills/deliver-file/SKILL.md`](./skills/deliver-file/SKILL.md): bundled outbound-delivery skill (`deliver-file`, displayed in Codex as `WeChat Bridge:Deliver File`)
 - [`skills/task-finished-notifier/SKILL.md`](./skills/task-finished-notifier/SKILL.md): bundled completion-notification skill (`wechat-bridge-task-finished-notifier`, displayed in Codex as `WeChat Bridge:Task Finished Notifier`)
 - [`docs/human-guide.md`](./docs/human-guide.md): operator-oriented guide
 - [`docs/codex-agent-guide.md`](./docs/codex-agent-guide.md): Codex-agent-oriented guide
@@ -307,7 +317,6 @@ Current local validation includes:
 ## Limits
 
 - private chats only
-- outbound media parity is not implemented
 - manual sends and some system pushes still depend on a fresh WeChat reply context
 - Node 22 `node:sqlite` remains experimental
 

@@ -1,0 +1,7 @@
+interface:
+  display_name: "WeChat Bridge:Deliver File"
+  short_description: "Send local files or images through the WeChat / Weixin bridge"
+  icon_small: "./assets/icon.png"
+  icon_large: "./assets/icon.png"
+  brand_color: "#0A6D46"
+  default_prompt: "Use $deliver-file when a user explicitly asks to send a local file or image to WeChat / Weixin through the installed bridge."

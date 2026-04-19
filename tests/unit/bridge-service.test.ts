@@ -64,6 +64,7 @@ describe("BridgeService", () => {
   test("records diagnostics when manual send fails because the reply context expired", async () => {
     const recordDeliveryAttempt = vi.fn();
     const recordDiagnostic = vi.fn();
+    const enqueueOutboundDelivery = vi.fn(() => 17);
     const service = new BridgeService(makeConfig(), {
       getAccount() {
         return {
@@ -76,6 +77,7 @@ describe("BridgeService", () => {
       getContextToken() {
         return "ctx-1";
       },
+      enqueueOutboundDelivery,
       recordDeliveryAttempt,
       recordDiagnostic,
       getRuntimeState() {
@@ -91,24 +93,141 @@ describe("BridgeService", () => {
       }),
     }));
 
-    await expect(
-      service.sendTextMessage({
-        accountId: "acct-1",
-        peerUserId: "user-a@im.wechat",
-        text: "manual probe",
-      }),
-    ).rejects.toThrow(/context is no longer valid/i);
+    await expect(service.sendTextMessage({
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      text: "manual probe",
+    })).resolves.toEqual({
+      messageId: "queued:17",
+      status: "queued",
+    });
 
     expect(recordDeliveryAttempt).toHaveBeenCalledWith(expect.objectContaining({
       conversationKey: "acct-1:user-a@im.wechat",
-      status: "manual_failed",
+      status: "manual_queued",
       errorMessage: expect.stringMatching(/context is no longer valid/i),
       prompt: "manual probe",
     }));
+    expect(enqueueOutboundDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-1",
+      kind: "text",
+      status: "waiting_for_fresh_context",
+      payload: {
+        text: "manual probe",
+      },
+    }));
     expect(recordDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
-      code: "manual_send_failed",
+      code: "manual_send_queued",
       accountId: "acct-1",
       detail: expect.stringContaining("context is no longer valid"),
+    }));
+  });
+
+  test("replays queued outbound text deliveries when a fresh inbound command arrives", async () => {
+    const markOutboundDeliveryStatus = vi.fn();
+    const recordDeliveryAttempt = vi.fn();
+    const sendTextMessage = vi.fn(async () => ({ messageId: "msg-1" }));
+    const service = new BridgeService(makeConfig(), {
+      getAccount() {
+        return {
+          accountId: "acct-1",
+          token: "token-1",
+          baseUrl: "https://ilinkai.weixin.qq.com",
+          loginState: "active",
+        };
+      },
+      getPollState() {
+        return { accountId: "acct-1", cursor: "cursor-1" };
+      },
+      savePollState: vi.fn(),
+      recordInboundMessage: vi.fn(() => true),
+      saveContextToken: vi.fn(),
+      resolveConversation() {
+        return {
+          conversationKey: "acct-1:user-a@im.wechat",
+          accountId: "acct-1",
+          peerUserId: "user-a@im.wechat",
+          createdAt: "2026-04-20T00:00:00.000Z",
+          updatedAt: "2026-04-20T00:00:00.000Z",
+        };
+      },
+      listOutboundDeliveries(statuses?: string[], conversationKey?: string) {
+        if (!statuses?.includes("waiting_for_fresh_context") || conversationKey !== "acct-1:user-a@im.wechat") {
+          return [];
+        }
+        return [{
+          id: 31,
+          conversationKey: "acct-1:user-a@im.wechat",
+          accountId: "acct-1",
+          peerUserId: "user-a@im.wechat",
+          contextToken: "ctx-old",
+          kind: "text" as const,
+          payload: { text: "<FINAL>:\nqueued summary" },
+          status: "waiting_for_fresh_context" as const,
+          createdAt: "2026-04-20T00:00:00.000Z",
+          updatedAt: "2026-04-20T00:00:00.000Z",
+        }];
+      },
+      markOutboundDeliveryStatus,
+      recordDeliveryAttempt,
+      saveRuntimeState: vi.fn(),
+      getRuntimeState() {
+        return undefined;
+      },
+      listPendingMessages: vi.fn(() => []),
+      listAccounts: vi.fn(() => []),
+      listConversations: vi.fn(() => []),
+      listDiagnostics: vi.fn(() => []),
+      recordDiagnostic: vi.fn(),
+    } as any);
+
+    (service as any).createAccountClient = vi.fn(() => ({
+      fetchUpdates: vi.fn(async () => ({
+        ret: 0,
+        get_updates_buf: "cursor-2",
+        msgs: [
+          {
+            message_id: 1001,
+            from_user_id: "user-a@im.wechat",
+            context_token: "ctx-fresh",
+            item_list: [
+              {
+                type: MessageItemType.TEXT,
+                text_item: { text: "/help" },
+              },
+            ],
+          },
+        ],
+      })),
+      sendTextMessage,
+    }));
+    (service as any).maybeStartPendingMessage = vi.fn();
+    (service as any).deliverPendingReviewSummaries = vi.fn(async () => undefined);
+    (service as any).deliverPendingLifecycleNotification = vi.fn(async () => undefined);
+
+    await service.pollAccount("acct-1");
+
+    expect(sendTextMessage).toHaveBeenNthCalledWith(1, {
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-fresh",
+      text: "<FINAL>:\nqueued summary",
+    });
+    expect(sendTextMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-fresh",
+      text: expect.stringContaining("Available commands:"),
+    }));
+    expect(markOutboundDeliveryStatus).toHaveBeenCalledWith(31, {
+      status: "sent",
+      errorMessage: undefined,
+    });
+    expect(recordDeliveryAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      conversationKey: "acct-1:user-a@im.wechat",
+      status: "queued_delivery_sent",
+      finalMessage: "<FINAL>:\nqueued summary",
     }));
   });
 
@@ -1289,6 +1408,7 @@ describe("BridgeService", () => {
       markPendingMessageStatus: vi.fn(),
       recordDiagnostic: vi.fn(),
       recordDeliveryAttempt: vi.fn(),
+      saveRuntimeState: vi.fn(),
       getRuntimeState() {
         return undefined;
       },

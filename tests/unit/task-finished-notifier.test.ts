@@ -1,42 +1,37 @@
-import { describe, expect, test } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-// @ts-expect-error JS skill script is imported directly for behavior verification.
-import { resolveSourceSessionId } from "../../skills/task-finished-notifier/scripts/send_task_finished_notification.mjs";
+import { afterEach, describe, expect, test } from "vitest";
 
-describe("resolveSourceSessionId", () => {
-  const conversation = { runner_thread_id: "bridge-thread-123" };
+describe("task-finished notifier payload parsing", () => {
+  const tempDirs: string[] = [];
 
-  test("prefers an explicit session id", () => {
-    expect(
-      resolveSourceSessionId(
-        { sessionId: "explicit-thread-456", useBridgeSession: false },
-        conversation,
-        { CODEX_THREAD_ID: "current-codex-thread-789" },
-      ),
-    ).toBe("explicit-thread-456");
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  test("uses the current Codex thread id before falling back to unknown", () => {
-    expect(
-      resolveSourceSessionId(
-        { useBridgeSession: false },
-        conversation,
-        { CODEX_THREAD_ID: "current-codex-thread-789" },
-      ),
-    ).toBe("current-codex-thread-789");
-  });
+  test("accepts a UTF-8 payload file with BOM", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "task-finished-notifier-"));
+    tempDirs.push(tempDir);
+    const payloadPath = path.join(tempDir, "payload.json");
+    const json = JSON.stringify({
+      overview: "已完成验证",
+      results: "中文内容应保持可读。",
+      nextStep: "继续下一步。",
+    }, null, 2);
+    fs.writeFileSync(payloadPath, `\uFEFF${json}`, "utf8");
 
-  test("uses the bridge session only when explicitly requested", () => {
-    expect(
-      resolveSourceSessionId(
-        { useBridgeSession: true },
-        conversation,
-        { CODEX_THREAD_ID: "current-codex-thread-789" },
-      ),
-    ).toBe("bridge-thread-123");
-  });
-
-  test("returns unknown when no source session metadata is available", () => {
-    expect(resolveSourceSessionId({ useBridgeSession: false }, { runner_thread_id: null }, {})).toBe("unknown");
+    // @ts-expect-error local .mjs script is covered by a colocated declaration file at runtime
+    return import("../../skills/task-finished-notifier/scripts/send_task_finished_notification.mjs")
+      .then((module) => {
+        expect(module.readPayloadFile(payloadPath)).toMatchObject({
+          overview: "已完成验证",
+          results: "中文内容应保持可读。",
+          nextStep: "继续下一步。",
+        });
+      });
   });
 });

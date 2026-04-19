@@ -2,6 +2,8 @@ import path from "node:path";
 
 import { createReplyOrchestrator } from "./reply-orchestrator.js";
 import { BridgeRestartRequestedError } from "./bridge-restart-requested-error.js";
+import { appendDeliverySkillPrompt } from "./delivery-guidance.js";
+import { parseDeliveryIntent, type DeliveryIntent } from "./delivery-intent.js";
 import type { BridgeConfig } from "../config/app-config.js";
 import { ExecCodexRunner } from "../codex/exec-codex-runner.js";
 import { AppServerClient, type AppServerThreadSummary } from "../codex/app-server-client.js";
@@ -17,9 +19,10 @@ import {
   TEST_SESSION_RETURN_PREFIX,
   parseWechatControlCommand,
 } from "../commands/wechat-control-commands.js";
-import type { ConversationRecord, PendingMessageRecord, StateStore } from "../state/sqlite-state-store.js";
+import type { ConversationRecord, OutboundDeliveryRecord, PendingMessageRecord, StateStore } from "../state/sqlite-state-store.js";
 import { HttpWeixinClient, type GetUpdatesResponse, MessageItemType } from "../weixin/weixin-api-client.js";
 import { downloadInboundAttachments, type InboundAttachmentDownload } from "../weixin/media-download.js";
+import { sendLocalMediaFile } from "../weixin/outbound-media.js";
 import { LoginManager } from "../weixin/login-manager.js";
 
 const SESSION_EXPIRED_ERROR = -14;
@@ -131,6 +134,10 @@ function buildMessageKey(message: NonNullable<GetUpdatesResponse["msgs"]>[number
   return `dup-${String(message.message_id ?? "unknown")}`;
 }
 
+function isReplyContextExpiredError(error: unknown): boolean {
+  return error instanceof Error && /ret=-2|reply context is no longer valid|refresh context_token/i.test(error.message);
+}
+
 export class BridgeService {
   private readonly loginManager: LoginManager;
   private readonly execCodexRunner: ExecCodexRunner;
@@ -220,7 +227,7 @@ export class BridgeService {
     return this.stateStore.listDiagnostics(limit);
   }
 
-  async sendTextMessage(input: { accountId: string; peerUserId: string; text: string; contextToken?: string }): Promise<{ messageId: string }> {
+  async sendTextMessage(input: { accountId: string; peerUserId: string; text: string; contextToken?: string }): Promise<{ messageId: string; status?: "queued" | "sent" }> {
     const account = this.requireAccount(input.accountId);
     const client = this.createAccountClient(account.accountId);
     const contextToken = input.contextToken ?? this.stateStore.getContextToken(account.accountId, input.peerUserId);
@@ -244,6 +251,39 @@ export class BridgeService {
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (isReplyContextExpiredError(error)) {
+        const queuedId = this.stateStore.enqueueOutboundDelivery({
+          conversationKey: `${input.accountId}:${input.peerUserId}`,
+          accountId: input.accountId,
+          peerUserId: input.peerUserId,
+          contextToken,
+          kind: "text",
+          payload: {
+            text: input.text,
+          },
+          status: "waiting_for_fresh_context",
+          errorMessage: message,
+        });
+        this.stateStore.recordDeliveryAttempt({
+          conversationKey: `${input.accountId}:${input.peerUserId}`,
+          status: "manual_queued",
+          errorMessage: message,
+          peerUserId: input.peerUserId,
+          contextToken,
+          prompt: input.text,
+          finalMessage: input.text,
+        });
+        this.stateStore.recordDiagnostic({
+          code: "manual_send_queued",
+          accountId: input.accountId,
+          detail: JSON.stringify({
+            peerUserId: input.peerUserId,
+            deliveryId: queuedId,
+            error: message,
+          }),
+        });
+        return { messageId: `queued:${queuedId}`, status: "queued" };
+      }
       this.stateStore.recordDeliveryAttempt({
         conversationKey: `${input.accountId}:${input.peerUserId}`,
         status: "manual_failed",
@@ -258,6 +298,93 @@ export class BridgeService {
         accountId: input.accountId,
         detail: JSON.stringify({
           peerUserId: input.peerUserId,
+          error: message,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async sendFileMessage(input: {
+    accountId: string;
+    peerUserId: string;
+    filePath: string;
+    contextToken?: string;
+    captionText?: string;
+  }): Promise<{ messageId: string; kind: "image" | "file"; status?: "queued" | "sent" }> {
+    const account = this.requireAccount(input.accountId);
+    const client = this.createAccountClient(account.accountId);
+    const contextToken = input.contextToken ?? this.stateStore.getContextToken(account.accountId, input.peerUserId);
+    if (!contextToken) {
+      throw new Error(`No context token found for ${account.accountId} -> ${input.peerUserId}`);
+    }
+    try {
+      const result = await this.sendLocalMediaFile({
+        client,
+        peerUserId: input.peerUserId,
+        contextToken,
+        filePath: input.filePath,
+      });
+      this.stateStore.recordDeliveryAttempt({
+        conversationKey: `${input.accountId}:${input.peerUserId}`,
+        status: "manual_media_sent",
+        peerUserId: input.peerUserId,
+        contextToken,
+        prompt: input.filePath,
+        finalMessage: input.filePath,
+      });
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isReplyContextExpiredError(error)) {
+        const queuedId = this.stateStore.enqueueOutboundDelivery({
+          conversationKey: `${input.accountId}:${input.peerUserId}`,
+          accountId: input.accountId,
+          peerUserId: input.peerUserId,
+          contextToken,
+          kind: "file",
+          payload: {
+            filePath: input.filePath,
+          },
+          status: "waiting_for_fresh_context",
+          errorMessage: message,
+        });
+        this.stateStore.recordDeliveryAttempt({
+          conversationKey: `${input.accountId}:${input.peerUserId}`,
+          status: "manual_media_queued",
+          errorMessage: message,
+          peerUserId: input.peerUserId,
+          contextToken,
+          prompt: input.filePath,
+          finalMessage: input.filePath,
+        });
+        this.stateStore.recordDiagnostic({
+          code: "manual_media_send_queued",
+          accountId: input.accountId,
+          detail: JSON.stringify({
+            peerUserId: input.peerUserId,
+            filePath: input.filePath,
+            deliveryId: queuedId,
+            error: message,
+          }),
+        });
+        return { messageId: `queued:${queuedId}`, kind: "file", status: "queued" };
+      }
+      this.stateStore.recordDeliveryAttempt({
+        conversationKey: `${input.accountId}:${input.peerUserId}`,
+        status: "manual_media_failed",
+        errorMessage: message,
+        peerUserId: input.peerUserId,
+        contextToken,
+        prompt: input.filePath,
+        finalMessage: input.filePath,
+      });
+      this.stateStore.recordDiagnostic({
+        code: "manual_media_send_failed",
+        accountId: input.accountId,
+        detail: JSON.stringify({
+          peerUserId: input.peerUserId,
+          filePath: input.filePath,
           error: message,
         }),
       });
@@ -365,6 +492,11 @@ export class BridgeService {
         accountId: account.accountId,
         peerUserId,
       });
+      await this.replayDeferredOutboundDeliveries({
+        accountId: account.accountId,
+        conversation,
+        contextToken: message.context_token ?? this.stateStore.getContextToken(account.accountId, peerUserId),
+      });
       const attachments = await this.downloadInboundAttachmentsIfPresent({
         accountId: account.accountId,
         peerUserId,
@@ -432,12 +564,16 @@ export class BridgeService {
         processed += 1;
         continue;
       }
+      const deliveryIntent = parseDeliveryIntent(commandText);
+      const promptWithDeliveryGuidance = deliveryIntent.enabled
+        ? appendDeliverySkillPrompt(prompt, deliveryIntent)
+        : prompt;
       const pendingMessageId = this.stateStore.enqueuePendingMessage({
         conversationKey: conversation.conversationKey,
         accountId: account.accountId,
         peerUserId,
         contextToken: message.context_token,
-        prompt,
+        prompt: promptWithDeliveryGuidance,
         thread: conversation.runnerBackend && conversation.runnerThreadId
           ? {
               runnerBackend: conversation.runnerBackend,
@@ -446,6 +582,9 @@ export class BridgeService {
             }
           : undefined,
       });
+      if (deliveryIntent.enabled) {
+        this.stateStore.saveRuntimeState(this.pendingDeliveryIntentKey(pendingMessageId), deliveryIntent);
+      }
       const pendingRow = this.stateStore.getPendingMessage(pendingMessageId)!;
       if (this.recoveryReviewPendingAccounts.has(account.accountId) || this.getPendingReviewState(conversation.conversationKey)?.count) {
         this.addPendingReviewItem(conversation.conversationKey, pendingRow.prompt);
@@ -477,6 +616,15 @@ export class BridgeService {
       messageId: String(input.message.message_id),
       itemList: input.message.item_list,
     });
+  }
+
+  protected async sendLocalMediaFile(input: {
+    client: Pick<HttpWeixinClient, "getUploadUrl" | "sendFileMessage" | "sendImageMessage">;
+    peerUserId: string;
+    contextToken: string;
+    filePath: string;
+  }): Promise<{ messageId: string; kind: "image" | "file" }> {
+    return await sendLocalMediaFile(input);
   }
 
   async runDaemonLoop(abortSignal?: AbortSignal): Promise<void> {
@@ -608,6 +756,7 @@ export class BridgeService {
   private async processPendingMessage(pending: PendingMessageRecord): Promise<void> {
     const client = this.createAccountClient(pending.accountId);
     const runtimePreferences = this.getRuntimePreferences();
+    const deliveryIntent = this.getPendingDeliveryIntent(pending.id);
     let currentAbortController = new AbortController();
     let typingTicket: string | undefined;
 
@@ -712,6 +861,7 @@ export class BridgeService {
         model: runtimePreferences.model,
         reasoningEffort: runtimePreferences.reasoningEffort,
         showFinalSummary: runtimePreferences.showFinalSummary,
+        deliveryIntent,
         signal: currentAbortController.signal,
         onIdleTimeout: async ({ timeoutMs }) => {
           await sendIdleTimeoutNotice(timeoutMs);
@@ -740,6 +890,7 @@ export class BridgeService {
       });
       const result = await runWithRunner(this.createCodexRunnerForPending(pending), typingTicket);
       finalizeSuccess(result);
+      this.clearPendingDeliveryIntent(pending.id);
     } catch (error) {
       let resolvedError = error;
       if (resolvedError instanceof CodexTurnFallbackRequestedError && resolvedError.targetBackend === "exec") {
@@ -768,12 +919,14 @@ export class BridgeService {
         try {
           const result = await runWithRunner(this.execCodexRunner, typingTicket);
           finalizeSuccess(result);
+          this.clearPendingDeliveryIntent(pending.id);
           return;
         } catch (fallbackError) {
           resolvedError = fallbackError;
         }
       }
       if (resolvedError instanceof CodexTurnInterruptedError) {
+        this.clearPendingDeliveryIntent(pending.id);
         this.stateStore.markPendingMessageStatus(pending.id, {
           status: "interrupted" as PendingMessageRecord["status"],
           thread: pending.runnerBackend && pending.runnerThreadId
@@ -800,6 +953,7 @@ export class BridgeService {
         });
         return;
       }
+      this.clearPendingDeliveryIntent(pending.id);
       this.stateStore.markPendingMessageStatus(pending.id, {
         status: "failed",
         thread: pending.runnerBackend && pending.runnerThreadId
@@ -1269,6 +1423,99 @@ export class BridgeService {
     this.stateStore.saveRuntimeState(PENDING_LIFECYCLE_NOTIFICATION_KEY, null);
   }
 
+  private async replayDeferredOutboundDeliveries(input: {
+    accountId: string;
+    conversation: ConversationRecord;
+    contextToken?: string | undefined;
+  }): Promise<void> {
+    if (typeof (this.stateStore as Partial<StateStore>).listOutboundDeliveries !== "function"
+      || typeof (this.stateStore as Partial<StateStore>).markOutboundDeliveryStatus !== "function") {
+      return;
+    }
+    const contextToken = input.contextToken?.trim();
+    if (!contextToken) {
+      return;
+    }
+
+    const pending = this.stateStore.listOutboundDeliveries(["waiting_for_fresh_context"], input.conversation.conversationKey);
+    if (pending.length === 0) {
+      return;
+    }
+
+    const client = this.createAccountClient(input.accountId);
+    for (const delivery of pending) {
+      try {
+        await this.replayDeferredOutboundDelivery({
+          client,
+          delivery,
+          contextToken,
+        });
+        this.stateStore.markOutboundDeliveryStatus(delivery.id, {
+          status: "sent",
+          errorMessage: undefined,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const nextStatus = isReplyContextExpiredError(error) ? "waiting_for_fresh_context" : "failed";
+        this.stateStore.markOutboundDeliveryStatus(delivery.id, {
+          status: nextStatus,
+          errorMessage: message,
+        });
+        this.stateStore.recordDiagnostic({
+          code: nextStatus === "waiting_for_fresh_context" ? "queued_delivery_still_waiting" : "queued_delivery_failed",
+          accountId: input.accountId,
+          detail: JSON.stringify({
+            deliveryId: delivery.id,
+            conversationKey: delivery.conversationKey,
+            error: message,
+          }),
+        });
+        if (nextStatus === "waiting_for_fresh_context") {
+          break;
+        }
+      }
+    }
+  }
+
+  private async replayDeferredOutboundDelivery(input: {
+    client: HttpWeixinClient;
+    delivery: OutboundDeliveryRecord;
+    contextToken: string;
+  }): Promise<void> {
+    if (input.delivery.kind === "text" && "text" in input.delivery.payload) {
+      await input.client.sendTextMessage({
+        peerUserId: input.delivery.peerUserId,
+        contextToken: input.contextToken,
+        text: input.delivery.payload.text,
+      });
+      this.stateStore.recordDeliveryAttempt({
+        conversationKey: input.delivery.conversationKey,
+        status: "queued_delivery_sent",
+        peerUserId: input.delivery.peerUserId,
+        contextToken: input.contextToken,
+        finalMessage: input.delivery.payload.text,
+      });
+      return;
+    }
+    if (input.delivery.kind === "file" && "filePath" in input.delivery.payload) {
+      await this.sendLocalMediaFile({
+        client: input.client,
+        peerUserId: input.delivery.peerUserId,
+        contextToken: input.contextToken,
+        filePath: input.delivery.payload.filePath,
+      });
+      this.stateStore.recordDeliveryAttempt({
+        conversationKey: input.delivery.conversationKey,
+        status: "queued_delivery_sent",
+        peerUserId: input.delivery.peerUserId,
+        contextToken: input.contextToken,
+        finalMessage: input.delivery.payload.filePath,
+      });
+      return;
+    }
+    throw new Error(`Unsupported queued delivery payload for kind ${input.delivery.kind}`);
+  }
+
   private async deliverPendingLifecycleNotification(accountId: string, client: HttpWeixinClient): Promise<void> {
     const pending = this.getPendingLifecycleNotification();
     if (!pending) {
@@ -1326,6 +1573,26 @@ export class BridgeService {
     return `${PENDING_REVIEW_PREFIX}${conversationKey}`;
   }
 
+  private pendingDeliveryIntentKey(pendingMessageId: number): string {
+    return `pending_delivery_intent:${pendingMessageId}`;
+  }
+
+  private getPendingDeliveryIntent(pendingMessageId: number): DeliveryIntent | undefined {
+    const value = this.stateStore.getRuntimeState(this.pendingDeliveryIntentKey(pendingMessageId));
+    if (!isObject(value) || typeof value.enabled !== "boolean" || !Array.isArray(value.requestedKinds) || !Array.isArray(value.evidenceText)) {
+      return undefined;
+    }
+    return {
+      enabled: value.enabled,
+      requestedKinds: value.requestedKinds.filter((kind): kind is DeliveryIntent["requestedKinds"][number] => typeof kind === "string"),
+      evidenceText: value.evidenceText.filter((item): item is string => typeof item === "string"),
+    };
+  }
+
+  private clearPendingDeliveryIntent(pendingMessageId: number): void {
+    this.stateStore.saveRuntimeState(this.pendingDeliveryIntentKey(pendingMessageId), null);
+  }
+
   private getPendingReviewState(conversationKey: string): { count: number; items: string[]; lastNotifiedCount?: number | undefined } | undefined {
     const value = this.stateStore.getRuntimeState(this.pendingReviewKey(conversationKey));
     if (!isObject(value) || !Array.isArray(value.items)) {
@@ -1376,7 +1643,7 @@ export class BridgeService {
         peerUserId: conversation.peerUserId,
         contextToken,
         text: [
-          "馃摗 Bridge recovered with pending backlog for this chat.",
+          "📡 Bridge recovered with pending backlog for this chat.",
           `pending messages: ${review.count}`,
           ...review.items.map((item, index) => `- ${index + 1}. ${item}`),
           "",

@@ -19,6 +19,13 @@ export const MessageItemType = {
   VIDEO: 5,
 } as const;
 
+export const UploadMediaType = {
+  IMAGE: 1,
+  VIDEO: 2,
+  FILE: 3,
+  VOICE: 4,
+} as const;
+
 export const TypingState = {
   Start: "start",
   Stop: "stop",
@@ -36,9 +43,43 @@ export type SendMessageRequest = {
     context_token?: string | undefined;
     item_list: Array<{
       type: number;
-      text_item: { text: string };
+      text_item?: { text: string } | undefined;
+      image_item?: {
+        media: {
+          encrypt_query_param: string;
+          aes_key: string;
+          encrypt_type: number;
+        };
+        mid_size: number;
+      } | undefined;
+      file_item?: {
+        media: {
+          encrypt_query_param: string;
+          aes_key: string;
+          encrypt_type: number;
+        };
+        file_name: string;
+        len: string;
+      } | undefined;
     }>;
   };
+};
+
+export type GetUploadUrlRequest = {
+  filekey: string;
+  media_type: number;
+  to_user_id: string;
+  rawsize: number;
+  rawfilemd5: string;
+  filesize: number;
+  no_need_thumb?: boolean | undefined;
+  aeskey?: string | undefined;
+};
+
+export type GetUploadUrlResponse = {
+  upload_param?: string | undefined;
+  upload_full_url?: string | undefined;
+  thumb_upload_param?: string | undefined;
 };
 
 export type WeixinMessage = {
@@ -154,6 +195,96 @@ export function buildSendMessageRequest(input: {
   };
 }
 
+export function buildGetUploadUrlRequest(input: {
+  fileKey: string;
+  mediaType: number;
+  toUserId: string;
+  rawSize: number;
+  rawFileMd5: string;
+  cipherSize: number;
+  noNeedThumb?: boolean | undefined;
+  aesKeyHex?: string | undefined;
+}): GetUploadUrlRequest {
+  return {
+    filekey: input.fileKey,
+    media_type: input.mediaType,
+    to_user_id: input.toUserId,
+    rawsize: input.rawSize,
+    rawfilemd5: input.rawFileMd5,
+    filesize: input.cipherSize,
+    ...(typeof input.noNeedThumb === "boolean" ? { no_need_thumb: input.noNeedThumb } : {}),
+    ...(input.aesKeyHex ? { aeskey: input.aesKeyHex } : {}),
+  };
+}
+
+export function buildImageMessageRequest(input: {
+  toUserId: string;
+  clientId: string;
+  contextToken?: string | undefined;
+  encryptQueryParam: string;
+  aesKeyBase64: string;
+  cipherSize: number;
+}): SendMessageRequest {
+  return {
+    msg: {
+      from_user_id: "",
+      to_user_id: input.toUserId,
+      client_id: input.clientId,
+      message_type: MessageType.BOT,
+      message_state: MessageState.FINISH,
+      context_token: input.contextToken,
+      item_list: [
+        {
+          type: MessageItemType.IMAGE,
+          image_item: {
+            media: {
+              encrypt_query_param: input.encryptQueryParam,
+              aes_key: input.aesKeyBase64,
+              encrypt_type: 1,
+            },
+            mid_size: input.cipherSize,
+          },
+        },
+      ],
+    },
+  };
+}
+
+export function buildFileMessageRequest(input: {
+  toUserId: string;
+  clientId: string;
+  contextToken?: string | undefined;
+  fileName: string;
+  encryptQueryParam: string;
+  aesKeyBase64: string;
+  plainSize: number;
+}): SendMessageRequest {
+  return {
+    msg: {
+      from_user_id: "",
+      to_user_id: input.toUserId,
+      client_id: input.clientId,
+      message_type: MessageType.BOT,
+      message_state: MessageState.FINISH,
+      context_token: input.contextToken,
+      item_list: [
+        {
+          type: MessageItemType.FILE,
+          file_item: {
+            media: {
+              encrypt_query_param: input.encryptQueryParam,
+              aes_key: input.aesKeyBase64,
+              encrypt_type: 1,
+            },
+            file_name: input.fileName,
+            len: String(input.plainSize),
+          },
+        },
+      ],
+    },
+  };
+}
+
 export function buildSendTypingRequest(input: {
   ilinkUserId: string;
   typingTicket: string;
@@ -253,6 +384,31 @@ export type WeixinClient = {
   setTyping(input: { peerUserId: string; typingTicket: string }): Promise<void>;
   stopTyping(input: { peerUserId: string; typingTicket: string }): Promise<void>;
   sendTextMessage(input: { peerUserId: string; contextToken: string; text: string }): Promise<{ messageId: string }>;
+  getUploadUrl(input: {
+    fileKey: string;
+    mediaType: number;
+    toUserId: string;
+    rawSize: number;
+    rawFileMd5: string;
+    cipherSize: number;
+    noNeedThumb?: boolean | undefined;
+    aesKeyHex?: string | undefined;
+  }): Promise<{ uploadParam?: string | undefined; uploadFullUrl?: string | undefined; thumbUploadParam?: string | undefined }>;
+  sendImageMessage(input: {
+    peerUserId: string;
+    contextToken: string;
+    encryptQueryParam: string;
+    aesKeyBase64: string;
+    cipherSize: number;
+  }): Promise<{ messageId: string }>;
+  sendFileMessage(input: {
+    peerUserId: string;
+    contextToken: string;
+    fileName: string;
+    encryptQueryParam: string;
+    aesKeyBase64: string;
+    plainSize: number;
+  }): Promise<{ messageId: string }>;
 };
 
 export class HttpWeixinClient implements WeixinClient {
@@ -347,6 +503,92 @@ export class HttpWeixinClient implements WeixinClient {
 
   async sendTextMessage(input: { peerUserId: string; contextToken: string; text: string }): Promise<{ messageId: string }> {
     const clientId = crypto.randomUUID();
+    const response = await this.sendMessageRequest({
+      request: buildSendMessageRequest({
+        toUserId: input.peerUserId,
+        text: input.text,
+        clientId,
+        contextToken: input.contextToken,
+      }),
+    });
+    return { messageId: clientId };
+  }
+
+  async getUploadUrl(input: {
+    fileKey: string;
+    mediaType: number;
+    toUserId: string;
+    rawSize: number;
+    rawFileMd5: string;
+    cipherSize: number;
+    noNeedThumb?: boolean | undefined;
+    aesKeyHex?: string | undefined;
+  }): Promise<{ uploadParam?: string | undefined; uploadFullUrl?: string | undefined; thumbUploadParam?: string | undefined }> {
+    const response = await fetchJson<GetUploadUrlResponse>({
+      method: "POST",
+      baseUrl: this.options.baseUrl,
+      endpoint: "ilink/bot/getuploadurl",
+      token: this.options.token,
+      appId: this.options.appId,
+      clientVersion: this.options.clientVersion,
+      timeoutMs: 15000,
+      body: {
+        ...buildGetUploadUrlRequest(input),
+        base_info: { channel_version: this.options.packageVersion },
+      },
+    });
+    return {
+      uploadParam: response.upload_param,
+      uploadFullUrl: response.upload_full_url,
+      thumbUploadParam: response.thumb_upload_param,
+    };
+  }
+
+  async sendImageMessage(input: {
+    peerUserId: string;
+    contextToken: string;
+    encryptQueryParam: string;
+    aesKeyBase64: string;
+    cipherSize: number;
+  }): Promise<{ messageId: string }> {
+    const clientId = crypto.randomUUID();
+    await this.sendMessageRequest({
+      request: buildImageMessageRequest({
+        toUserId: input.peerUserId,
+        clientId,
+        contextToken: input.contextToken,
+        encryptQueryParam: input.encryptQueryParam,
+        aesKeyBase64: input.aesKeyBase64,
+        cipherSize: input.cipherSize,
+      }),
+    });
+    return { messageId: clientId };
+  }
+
+  async sendFileMessage(input: {
+    peerUserId: string;
+    contextToken: string;
+    fileName: string;
+    encryptQueryParam: string;
+    aesKeyBase64: string;
+    plainSize: number;
+  }): Promise<{ messageId: string }> {
+    const clientId = crypto.randomUUID();
+    await this.sendMessageRequest({
+      request: buildFileMessageRequest({
+        toUserId: input.peerUserId,
+        clientId,
+        contextToken: input.contextToken,
+        fileName: input.fileName,
+        encryptQueryParam: input.encryptQueryParam,
+        aesKeyBase64: input.aesKeyBase64,
+        plainSize: input.plainSize,
+      }),
+    });
+    return { messageId: clientId };
+  }
+
+  private async sendMessageRequest(input: { request: SendMessageRequest }): Promise<{ ret?: number; errcode?: number; errmsg?: string }> {
     const response = await fetchJson<{ ret?: number; errcode?: number; errmsg?: string }>({
       method: "POST",
       baseUrl: this.options.baseUrl,
@@ -358,17 +600,12 @@ export class HttpWeixinClient implements WeixinClient {
       retryLimit: 2,
       retryDelayMs: 400,
       body: {
-        ...buildSendMessageRequest({
-          toUserId: input.peerUserId,
-          text: input.text,
-          clientId,
-          contextToken: input.contextToken,
-        }),
+        ...input.request,
         base_info: { channel_version: this.options.packageVersion },
       },
     });
     assertBusinessSuccess(response, "sendmessage");
-    return { messageId: clientId };
+    return response;
   }
 
   async setTyping(input: { peerUserId: string; typingTicket: string }): Promise<void> {

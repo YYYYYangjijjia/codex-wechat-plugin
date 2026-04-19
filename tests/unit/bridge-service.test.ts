@@ -1,6 +1,7 @@
 ﻿import { describe, expect, test, vi } from "vitest";
 
 import { BridgeService } from "../../src/daemon/bridge-service.js";
+import { BridgeRestartRequestedError } from "../../src/daemon/bridge-restart-requested-error.js";
 import type { BridgeConfig } from "../../src/config/app-config.js";
 import { MessageItemType } from "../../src/weixin/weixin-api-client.js";
 
@@ -28,6 +29,37 @@ function makeConfig(): BridgeConfig {
 }
 
 describe("BridgeService", () => {
+  test("rethrows bridge restart requests so the runtime supervisor can restart the daemon", async () => {
+    const service = new BridgeService({
+      ...makeConfig(),
+      loopIdleDelayMs: 0,
+    }, {
+      listAccounts() {
+        return [
+          {
+            accountId: "acct-1",
+            token: "token-1",
+            baseUrl: "https://ilinkai.weixin.qq.com",
+            loginState: "active",
+          },
+        ];
+      },
+      listPendingMessages() {
+        return [];
+      },
+      saveRuntimeState: vi.fn(),
+      recordDiagnostic: vi.fn(),
+      close: vi.fn(),
+      getRuntimeState: vi.fn(),
+    } as any);
+
+    (service as any).pollAccount = vi.fn(async () => {
+      throw new BridgeRestartRequestedError("restart requested from test");
+    });
+
+    await expect(service.runDaemonLoop()).rejects.toThrow(BridgeRestartRequestedError);
+  });
+
   test("records diagnostics when manual send fails because the reply context expired", async () => {
     const recordDeliveryAttempt = vi.fn();
     const recordDiagnostic = vi.fn();

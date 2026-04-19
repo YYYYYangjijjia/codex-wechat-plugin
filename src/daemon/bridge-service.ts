@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { createReplyOrchestrator } from "./reply-orchestrator.js";
+import { BridgeRestartRequestedError } from "./bridge-restart-requested-error.js";
 import type { BridgeConfig } from "../config/app-config.js";
 import { ExecCodexRunner } from "../codex/exec-codex-runner.js";
 import { AppServerClient, type AppServerThreadSummary } from "../codex/app-server-client.js";
@@ -423,6 +424,9 @@ export class BridgeService {
           prompt: commandText,
           finalMessage: actionResponse ?? commandResult.responseText,
         });
+        if (commandResult.action?.type === "restart_bridge") {
+          throw new BridgeRestartRequestedError("Bridge restart requested from WeChat control command.");
+        }
         processed += 1;
         continue;
       }
@@ -498,6 +502,9 @@ export class BridgeService {
         try {
           await this.pollAccount(account.accountId);
         } catch (error) {
+          if (error instanceof BridgeRestartRequestedError) {
+            throw error;
+          }
           this.stateStore.recordDiagnostic({
             code: "poll_error",
             accountId: account.accountId,
@@ -733,11 +740,14 @@ export class BridgeService {
 
   private async executeCommandAction(input: {
     conversation: ConversationRecord;
-    result: { action?: { type: "stop" } | { type: "append"; guidance: string } | { type: "use_session"; threadId: string; afterSwitch?: "remember_non_test" | "clear_test_return" } | { type: "quota_read" } | { type: "pending_continue" } | { type: "pending_clear" } | undefined; responseText?: string | undefined };
+    result: { action?: { type: "stop" } | { type: "restart_bridge" } | { type: "append"; guidance: string } | { type: "use_session"; threadId: string; afterSwitch?: "remember_non_test" | "clear_test_return" } | { type: "quota_read" } | { type: "pending_continue" } | { type: "pending_clear" } | undefined; responseText?: string | undefined };
     accountId: string;
   }): Promise<string | undefined> {
     if (!input.result.action) {
       return undefined;
+    }
+    if (input.result.action.type === "restart_bridge") {
+      return input.result.responseText;
     }
     if (input.result.action.type === "quota_read") {
       return await this.readQuotaForChat(input.accountId);

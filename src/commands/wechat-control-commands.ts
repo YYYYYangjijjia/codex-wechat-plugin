@@ -47,6 +47,7 @@ type PendingConfirmation =
 
 type CommandAction =
   | { type: "stop" }
+  | { type: "restart_bridge" }
   | { type: "append"; guidance: string }
   | { type: "use_session"; threadId: string; afterSwitch?: "remember_non_test" | "clear_test_return" }
   | { type: "quota_read" }
@@ -138,6 +139,7 @@ export function handleWechatControlCommand(input: {
           "- /quota - show the current Codex rate-limit snapshot",
           "- /skills - show the currently installed local and plugin skills",
           "- /stop - interrupt the current Codex task for this chat",
+          "- /restart - restart the current bridge daemon for this chat",
           "- /append <text> - steer the current in-flight Codex task with more guidance",
           "- /pending - show the current backlog review summary for this chat",
           "- /pending continue - release pending backlog messages to Codex",
@@ -442,6 +444,12 @@ export function handleWechatControlCommand(input: {
         action: { type: "append", guidance },
       };
     }
+    case "restart":
+      return {
+        handled: true,
+        responseText: formatSystemReply("warning", "Restarting the current bridge daemon after this reply is sent."),
+        action: { type: "restart_bridge" },
+      };
     case "pending": {
       const subcommand = parsed.args[0]?.toLowerCase();
       if (!subcommand) {

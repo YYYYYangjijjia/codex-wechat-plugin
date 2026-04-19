@@ -15,27 +15,19 @@ export class AppServerCodexRunner implements CodexRunner {
   ) {}
 
   async listThreads(input?: { limit?: number; sourceKinds?: string[] }): Promise<AppServerThreadSummary[]> {
-    await this.options.processManager.ensureRunning();
-    await this.ensureInitialized();
-    return await this.options.client.listThreads(input);
+    return await this.runWithRecoveredInitialization(() => this.options.client.listThreads(input));
   }
 
   async listModels(): Promise<AppServerModelSummary[]> {
-    await this.options.processManager.ensureRunning();
-    await this.ensureInitialized();
-    return await this.options.client.listModels();
+    return await this.runWithRecoveredInitialization(() => this.options.client.listModels());
   }
 
   async readRateLimits(): Promise<AppServerRateLimitsSnapshot> {
-    await this.options.processManager.ensureRunning();
-    await this.ensureInitialized();
-    return await this.options.client.readRateLimits();
+    return await this.runWithRecoveredInitialization(() => this.options.client.readRateLimits());
   }
 
   async resumeThread(threadId: string): Promise<ThreadRecord> {
-    await this.options.processManager.ensureRunning();
-    await this.ensureInitialized();
-    return await this.options.client.resumeThread({ threadId });
+    return await this.runWithRecoveredInitialization(() => this.options.client.resumeThread({ threadId }));
   }
 
   async runTurn(input: {
@@ -57,7 +49,6 @@ export class AppServerCodexRunner implements CodexRunner {
       append?: ((guidance: string) => Promise<void>) | undefined;
     }) => void) | undefined;
   }): Promise<CodexTurnResult> {
-    await this.options.processManager.ensureRunning();
     await this.ensureInitialized();
 
     const answerChunker = new ProgressChunker();
@@ -159,6 +150,7 @@ export class AppServerCodexRunner implements CodexRunner {
   }
 
   private async ensureInitialized(): Promise<void> {
+    await this.options.processManager.ensureRunning();
     if (!this.initializePromise) {
       this.initializePromise = this.options.client.initialize().then(() => undefined);
     }
@@ -170,10 +162,31 @@ export class AppServerCodexRunner implements CodexRunner {
     this.initializePromise = undefined;
   }
 
+  private async runWithRecoveredInitialization<T>(operation: () => Promise<T>): Promise<T> {
+    await this.ensureInitialized();
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isNotInitializedError(error)) {
+        throw error;
+      }
+      this.resetClient();
+      await this.ensureInitialized();
+      return await operation();
+    }
+  }
+
   private async findReusableThreadId(threadName: string): Promise<string | undefined> {
     const threads = await this.options.client.listThreads({ limit: 50 });
     return threads.find((thread) => thread.name === threadName)?.id;
   }
+}
+
+function isNotInitializedError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return /not initialized/i.test(error.message);
 }
 
 class ProgressChunker {

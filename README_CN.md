@@ -63,7 +63,7 @@
 - 分段输出，避免用户长时间等待却没有任何反馈，并支持可选 `/final` 汇总
 - fenced code、表格、列表、附件类输出的结构化处理
 - 图片/文件附件写入插件运行时缓存目录，并以附件感知方式注入给 Codex
-- 微信侧控制命令，如 `/help`、`/session`、`/use-session`、`/append`、`/stop`、`/status`、`/quota`、`/model`、`/effort`、`/skills`
+- 微信侧控制命令，如 `/help`、`/session`、`/use-session`、`/append`、`/stop`、`/restart`、`/status`、`/quota`、`/model`、`/effort`、`/skills`
 - 支持从微信侧覆盖模型与推理强度
 - 支持从微信侧切换是否发送最终完整汇总
 - Windows 托盘控制 daemon 生命周期与状态
@@ -224,6 +224,7 @@ npm run typecheck
 - `/test-session unbind` - 清除共享测试 session 绑定。
 - `/append <text>` - 在支持的情况下向当前运行任务追加引导文本。
 - `/stop` - 停止当前聊天正在运行的任务。
+- `/restart` - 在当前命令回复发送完成后，重启当前 bridge daemon。
 - `/pending` - 查看当前聊天的 backlog 审核状态。
 - `/pending continue` - 继续处理当前 backlog 审核项。
 - `/pending clear` - 丢弃当前 backlog 审核项。
@@ -256,8 +257,8 @@ npm run typecheck
 - [`src/cli/mcp-server.ts`](./src/cli/mcp-server.ts)：MCP server 入口
 - [`scripts/install-codex-plugin.ps1`](./scripts/install-codex-plugin.ps1)：本地 Codex plugin 安装脚本
 - [`scripts/install-tray-launcher.ps1`](./scripts/install-tray-launcher.ps1)：tray + 桌面快捷方式安装脚本
-- [`skills/wechat-bridge-ops/SKILL.md`](./skills/wechat-bridge-ops/SKILL.md)：内置运维技能（原始 skill 名为 `wechat-bridge-ops`，在 Codex 中显示为 `WeChat Bridge: Ops`）
-- [`skills/task-finished-notifier/SKILL.md`](./skills/task-finished-notifier/SKILL.md)：内置任务完成通知技能（原始 skill 名为 `wechat-bridge-task-finished-notifier`，在 Codex 中显示为 `WeChat Bridge: Task Finished Notifier`）
+- [`skills/wechat-bridge-ops/SKILL.md`](./skills/wechat-bridge-ops/SKILL.md)：内置运维技能（原始 skill 名为 `wechat-bridge-ops`，在 Codex 中显示为 `WeChat Bridge:OPS`）
+- [`skills/task-finished-notifier/SKILL.md`](./skills/task-finished-notifier/SKILL.md)：内置任务完成通知技能（原始 skill 名为 `wechat-bridge-task-finished-notifier`，在 Codex 中显示为 `WeChat Bridge:Task Finished Notifier`）
 - [`docs/human-guide.md`](./docs/human-guide.md)：面向操作用户的文档
 - [`docs/codex-agent-guide.md`](./docs/codex-agent-guide.md)：面向 Codex agent 的文档
 - [`docs/architecture.md`](./docs/architecture.md)：架构说明

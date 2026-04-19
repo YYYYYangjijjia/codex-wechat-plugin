@@ -203,6 +203,23 @@ describe("wechat control commands", () => {
     });
   });
 
+  test("returns a restart action for /restart", () => {
+    const store = new FakeStore();
+    const result = handleWechatControlCommand({
+      text: "/restart",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+
+    expect(result).toEqual({
+      handled: true,
+      responseText: "⚠️ Restarting the current bridge daemon after this reply is sent.",
+      action: { type: "restart_bridge" },
+    });
+  });
+
   test("reports and controls pending backlog review", () => {
     const store = new FakeStore();
     const summaryResult = handleWechatControlCommand({

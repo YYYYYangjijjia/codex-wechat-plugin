@@ -63,7 +63,7 @@ The intended operating model is:
 - segmented partial replies to avoid long periods of silent waiting, plus optional full summary via `/final`
 - structured block handling for fenced code, tables, lists, and attachment-style outputs
 - inbound image and file caching under the plugin runtime cache directory, with attachment-aware prompt injection
-- WeChat-side control commands such as `/help`, `/session`, `/use-session`, `/append`, `/stop`, `/status`, `/quota`, `/model`, `/effort`, `/skills`
+- WeChat-side control commands such as `/help`, `/session`, `/use-session`, `/append`, `/stop`, `/restart`, `/status`, `/quota`, `/model`, `/effort`, `/skills`
 - model / reasoning-effort overrides from WeChat
 - optional final-summary toggle from WeChat
 - Windows tray controls for daemon lifecycle and status
@@ -251,6 +251,7 @@ npm run typecheck
 - `/no` - cancel the current pending destructive action.
 - `/append <text>` - append steering text to the currently running task when supported.
 - `/stop` - stop the currently running task for this chat.
+- `/restart` - restart the current bridge daemon for this chat after the confirmation reply is sent.
 - `/pending` - show the current backlog review state for this chat.
 - `/pending continue` - continue processing the current backlog review items.
 - `/pending clear` - discard the current backlog review items.
@@ -283,8 +284,8 @@ The bridge injects attachment metadata and local paths into the Codex prompt. Th
 - [`src/cli/mcp-server.ts`](./src/cli/mcp-server.ts): MCP server entrypoint
 - [`scripts/install-codex-plugin.ps1`](./scripts/install-codex-plugin.ps1): local Codex plugin installer
 - [`scripts/install-tray-launcher.ps1`](./scripts/install-tray-launcher.ps1): tray + desktop shortcut installer
-- [`skills/wechat-bridge-ops/SKILL.md`](./skills/wechat-bridge-ops/SKILL.md): bundled operational skill (`wechat-bridge-ops`, displayed in Codex as `WeChat Bridge: Ops`)
-- [`skills/task-finished-notifier/SKILL.md`](./skills/task-finished-notifier/SKILL.md): bundled completion-notification skill (`wechat-bridge-task-finished-notifier`, displayed in Codex as `WeChat Bridge: Task Finished Notifier`)
+- [`skills/wechat-bridge-ops/SKILL.md`](./skills/wechat-bridge-ops/SKILL.md): bundled operational skill (`wechat-bridge-ops`, displayed in Codex as `WeChat Bridge:OPS`)
+- [`skills/task-finished-notifier/SKILL.md`](./skills/task-finished-notifier/SKILL.md): bundled completion-notification skill (`wechat-bridge-task-finished-notifier`, displayed in Codex as `WeChat Bridge:Task Finished Notifier`)
 - [`docs/human-guide.md`](./docs/human-guide.md): operator-oriented guide
 - [`docs/codex-agent-guide.md`](./docs/codex-agent-guide.md): Codex-agent-oriented guide
 - [`docs/architecture.md`](./docs/architecture.md): architecture summary

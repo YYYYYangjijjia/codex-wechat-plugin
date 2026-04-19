@@ -1,4 +1,5 @@
-﻿import path from 'node:path';
+﻿import fs from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { HttpWeixinClient } from '../../../dist/src/weixin/weixin-api-client.js';
@@ -42,6 +43,9 @@ function parseArgs(argv) {
       case '--session-name':
         options.sessionName = argv[++i];
         break;
+      case '--payload-file':
+        options.payloadFile = argv[++i];
+        break;
       case '--overview':
         options.overview = argv[++i];
         break;
@@ -56,6 +60,25 @@ function parseArgs(argv) {
     }
   }
   return options;
+}
+
+function readPayloadFile(filePath) {
+  const resolvedPath = path.resolve(filePath);
+  const raw = fs.readFileSync(resolvedPath, 'utf8');
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error(`Payload file must contain a JSON object: ${resolvedPath}`);
+  }
+  return parsed;
+}
+
+function mergeOptionsWithPayload(options, payload) {
+  return {
+    ...payload,
+    ...Object.fromEntries(
+      Object.entries(options).filter(([, value]) => value !== undefined),
+    ),
+  };
 }
 
 function requireText(value, label) {
@@ -177,7 +200,10 @@ function buildMessage({ sessionId, sessionName, overview, results, nextStep }) {
 }
 
 async function main() {
-  const options = parseArgs(process.argv.slice(2));
+  const parsedOptions = parseArgs(process.argv.slice(2));
+  const options = parsedOptions.payloadFile
+    ? mergeOptionsWithPayload(parsedOptions, readPayloadFile(parsedOptions.payloadFile))
+    : parsedOptions;
   const overview = requireText(options.overview, '--overview');
   const results = requireText(options.results, '--results');
   const nextStep = requireText(options.nextStep, '--next-step');

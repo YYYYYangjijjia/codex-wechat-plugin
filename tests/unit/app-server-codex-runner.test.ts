@@ -149,6 +149,33 @@ describe("AppServerCodexRunner", () => {
     expect(client.startTurnCalls).toBe(2);
   });
 
+  test("reinitializes and retries resumeThread once when app-server reports Not initialized", async () => {
+    const processManager = new FakeProcessManager();
+    const client = new FakeAppServerClient();
+    let firstResume = true;
+    client.resumeThread = async (input: { threadId: string }) => {
+      client.resumeThreadCalls += 1;
+      expect(input).toEqual({ threadId: "thread-existing" });
+      if (firstResume) {
+        firstResume = false;
+        throw new Error("Not initialized");
+      }
+      return { id: input.threadId };
+    };
+    const runner = new AppServerCodexRunner({
+      processManager,
+      client,
+      turnTimeoutMs: 30_000,
+    });
+
+    const thread = await runner.resumeThread("thread-existing");
+
+    expect(thread).toEqual({ id: "thread-existing" });
+    expect(client.initializeCalls).toBe(2);
+    expect(client.closeCalls).toBe(1);
+    expect(client.resumeThreadCalls).toBe(2);
+  });
+
   test("labels new threads and forwards progress chunks", async () => {
     const processManager = new FakeProcessManager();
     const client = new FakeAppServerClient();

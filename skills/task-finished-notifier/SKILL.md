@@ -7,7 +7,7 @@ description: "Use when any Codex session finishes a task and you need to push a 
 
 ![WeChat Bridge Icon](./assets/icon.png)
 
-Use this skill when a task is complete in any Codex session and you want to push a structured completion notice into WeChat / Weixin through the installed bridge runtime.
+Use this skill when work is complete in any Codex session and you need to push a structured completion notice into WeChat / Weixin through the installed bridge runtime.
 
 ## Core model
 
@@ -28,9 +28,9 @@ When this skill runs inside a normal Codex Desktop session and you do not pass `
 
 ## What this skill is for
 
-- Send a single completion notification after finishing a meaningful task.
+- Send one completion notification after a meaningful task finishes.
 - Keep the message format stable across runs.
-- Use UTF-8-safe Node code instead of ad-hoc shell text so Chinese content and emoji are preserved.
+- Preserve Chinese text and emoji by using a UTF-8-safe payload path.
 - Allow any Codex session to push a result to WeChat / Weixin, as long as the bridge has a valid delivery route.
 
 ## Required message format
@@ -53,23 +53,39 @@ When this skill runs inside a normal Codex Desktop session and you do not pass `
 - Prefer explicit `--session-id` and `--session-name` values from the session that completed the work when you have them.
 - Otherwise rely on the current Codex Desktop session id auto-detection before falling back to `unknown`.
 - Only use bridge-side session metadata as an explicit fallback when you intentionally want to report the mapped WeChat session instead.
+- **Do not pass Chinese text directly through shell command-line arguments.**
+- **Do not rely on the Windows shell or PowerShell default encoding to preserve Chinese.**
+- When any field contains Chinese, emoji, or other non-ASCII content, write a UTF-8 JSON payload file first and pass it with `--payload-file`.
+- Keep the shell command itself ASCII-safe and let the script read UTF-8 content from disk.
 
-## How to send
+## Recommended sending path
 
-Run the bundled script:
+1. Write a UTF-8 JSON payload file.
+2. Invoke the script with `--payload-file <path>`.
+3. Use `--dry-run` first if you need to inspect the final text.
+
+Example payload file:
+
+```json
+{
+  "overview": "已修复 /use-record 切换 session 时的 app-server 初始化恢复问题。",
+  "results": "AppServerCodexRunner 现在会在 Not initialized 时自动重置并重试一次；安装版已同步。",
+  "nextStep": "请在微信里再次执行 /use-record videofm0302 进行验证。",
+  "sessionId": "<source-session-id>",
+  "sessionName": "<source-session-name>"
+}
+```
+
+Example invocation:
 
 ```powershell
-node skills/task-finished-notifier/scripts/send_task_finished_notification.mjs \
-  --overview "已完成任务概述" \
-  --results "最终结果概述" \
-  --next-step "建议的下一步" \
-  --session-id "<source-session-id>" \
-  --session-name "<source-session-name>"
+node skills/task-finished-notifier/scripts/send_task_finished_notification.mjs --payload-file C:\temp\task-finished.json
 ```
 
 Useful flags:
 
 - `--dry-run`: print the final message without sending it.
+- `--payload-file <path>`: read UTF-8 JSON content instead of passing non-ASCII text through shell arguments.
 - `--session-id <id>`: explicit source session id to include in the message.
 - `--session-name <name>`: explicit source session name to include in the message.
 - `--account-id <id>` / `--peer-user-id <id>`: target a specific WeChat / Weixin conversation instead of the latest known one.

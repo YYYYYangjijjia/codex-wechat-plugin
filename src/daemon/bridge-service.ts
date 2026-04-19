@@ -8,7 +8,7 @@ import { AppServerClient, type AppServerThreadSummary } from "../codex/app-serve
 import { AppServerCodexRunner } from "../codex/app-server-codex-runner.js";
 import { AppServerProcessManager } from "../codex/app-server-process-manager.js";
 import { WebSocketAppServerTransport } from "../codex/app-server-websocket-transport.js";
-import { CodexTurnInterruptedError, type ActiveTurnControl, type CodexRunner, type ReasoningEffort, type RunnerBackend } from "../codex/codex-runner.js";
+import { CodexTurnFallbackRequestedError, CodexTurnInterruptedError, type ActiveTurnControl, type CodexRunner, type ReasoningEffort, type RunnerBackend } from "../codex/codex-runner.js";
 import { listInstalledSkills } from "../commands/installed-skills.js";
 import { runTurnWithFallback } from "../codex/fallback-codex-runner.js";
 import {
@@ -50,6 +50,8 @@ type ActiveTaskState = {
   threadId?: string | undefined;
   turnId?: string | undefined;
   supportsAppend: boolean;
+  fallbackEligible?: boolean | undefined;
+  fallbackRequestedBackend?: RunnerBackend | undefined;
   control?: ActiveTurnControl | undefined;
 };
 
@@ -605,53 +607,33 @@ export class BridgeService {
 
   private async processPendingMessage(pending: PendingMessageRecord): Promise<void> {
     const client = this.createAccountClient(pending.accountId);
-    try {
-      const typingTicket = await client.getTypingTicket({
-        peerUserId: pending.peerUserId,
-        contextToken: pending.contextToken,
-      });
-      const orchestrator = createReplyOrchestrator({
-        stateStore: this.stateStore,
-        codexRunner: this.createCodexRunnerForPending(pending),
-        weixinClient: client,
-      });
-      const runtimePreferences = this.getRuntimePreferences();
-      const abortController = new AbortController();
+    const runtimePreferences = this.getRuntimePreferences();
+    let currentAbortController = new AbortController();
+    let typingTicket: string | undefined;
+
+    const setActiveTask = (overrides?: Partial<ActiveTaskState>): void => {
+      const current = this.activeTasks.get(pending.conversationKey);
       this.activeTasks.set(pending.conversationKey, {
         pendingMessageId: pending.id,
         conversationKey: pending.conversationKey,
         prompt: pending.prompt,
-        abortController,
-        supportsAppend: false,
+        abortController: overrides?.abortController ?? current?.abortController ?? currentAbortController,
+        supportsAppend: overrides?.supportsAppend ?? current?.supportsAppend ?? false,
+        ...(overrides?.runnerBackend ? { runnerBackend: overrides.runnerBackend } : current?.runnerBackend ? { runnerBackend: current.runnerBackend } : {}),
+        ...(overrides?.threadId ? { threadId: overrides.threadId } : current?.threadId ? { threadId: current.threadId } : {}),
+        ...(overrides?.turnId ? { turnId: overrides.turnId } : current?.turnId ? { turnId: current.turnId } : {}),
+        ...(overrides?.fallbackEligible !== undefined ? { fallbackEligible: overrides.fallbackEligible } : current?.fallbackEligible !== undefined ? { fallbackEligible: current.fallbackEligible } : {}),
+        ...(overrides?.fallbackRequestedBackend ? { fallbackRequestedBackend: overrides.fallbackRequestedBackend } : current?.fallbackRequestedBackend ? { fallbackRequestedBackend: current.fallbackRequestedBackend } : {}),
+        ...(overrides?.control ? { control: overrides.control } : current?.control ? { control: current.control } : {}),
       });
-      const result = await orchestrator.handleInboundMessage({
-        conversationKey: pending.conversationKey,
-        threadId: pending.threadId,
-        accountId: pending.accountId,
-        peerUserId: pending.peerUserId,
-        contextToken: pending.contextToken ?? "",
-        prompt: pending.prompt,
-        threadName: this.getPendingNewSessionName(pending.conversationKey) ?? undefined,
-        typingTicket,
-        model: runtimePreferences.model,
-        reasoningEffort: runtimePreferences.reasoningEffort,
-        showFinalSummary: runtimePreferences.showFinalSummary,
-        signal: abortController.signal,
-        onTurnStarted: (control) => {
-          const current = this.activeTasks.get(pending.conversationKey);
-          this.activeTasks.set(pending.conversationKey, {
-            pendingMessageId: pending.id,
-            conversationKey: pending.conversationKey,
-            prompt: pending.prompt,
-            abortController: current?.abortController ?? abortController,
-            runnerBackend: control.runnerBackend,
-            threadId: control.threadId,
-            turnId: control.turnId,
-            supportsAppend: control.supportsAppend,
-            control,
-          });
-        },
-      });
+    };
+
+    const finalizeSuccess = (result: {
+      runnerBackend: RunnerBackend;
+      threadId: string;
+      cwd: string;
+      timings: Record<string, unknown>;
+    }): void => {
       this.stateStore.updateConversationThread(pending.conversationKey, {
         runnerBackend: result.runnerBackend,
         runnerThreadId: result.threadId,
@@ -675,8 +657,123 @@ export class BridgeService {
           ...result.timings,
         }),
       });
+    };
+
+    const sendIdleTimeoutNotice = async (timeoutMs: number): Promise<void> => {
+      const current = this.activeTasks.get(pending.conversationKey);
+      if (!current || current.fallbackEligible) {
+        return;
+      }
+      setActiveTask({ fallbackEligible: true });
+      this.stateStore.recordDiagnostic({
+        code: "reply_idle_timeout",
+        accountId: pending.accountId,
+        detail: JSON.stringify({
+          conversationKey: pending.conversationKey,
+          timeoutMs,
+          runnerBackend: "app_server",
+        }),
+      });
+      try {
+        await client.sendTextMessage({
+          peerUserId: pending.peerUserId,
+          contextToken: pending.contextToken ?? "",
+          text: this.formatIdleTimeoutMessage(timeoutMs),
+        });
+        this.stateStore.recordDeliveryAttempt({
+          conversationKey: pending.conversationKey,
+          status: "timeout_notice_sent",
+          finalMessage: this.formatIdleTimeoutMessage(timeoutMs),
+        });
+      } catch (error) {
+        this.stateStore.recordDiagnostic({
+          code: "reply_idle_timeout_notice_failed",
+          accountId: pending.accountId,
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
+    const runWithRunner = async (codexRunner: CodexRunner, typingTicket?: string) => {
+      const orchestrator = createReplyOrchestrator({
+        stateStore: this.stateStore,
+        codexRunner,
+        weixinClient: client,
+      });
+      return await orchestrator.handleInboundMessage({
+        conversationKey: pending.conversationKey,
+        threadId: pending.threadId,
+        accountId: pending.accountId,
+        peerUserId: pending.peerUserId,
+        contextToken: pending.contextToken ?? "",
+        prompt: pending.prompt,
+        threadName: this.getPendingNewSessionName(pending.conversationKey) ?? undefined,
+        typingTicket,
+        model: runtimePreferences.model,
+        reasoningEffort: runtimePreferences.reasoningEffort,
+        showFinalSummary: runtimePreferences.showFinalSummary,
+        signal: currentAbortController.signal,
+        onIdleTimeout: async ({ timeoutMs }) => {
+          await sendIdleTimeoutNotice(timeoutMs);
+        },
+        onTurnStarted: (control) => {
+          setActiveTask({
+            runnerBackend: control.runnerBackend,
+            threadId: control.threadId,
+            turnId: control.turnId,
+            supportsAppend: control.supportsAppend,
+            control,
+          });
+        },
+      });
+    };
+
+    try {
+      typingTicket = await client.getTypingTicket({
+        peerUserId: pending.peerUserId,
+        contextToken: pending.contextToken,
+      });
+      setActiveTask({
+        abortController: currentAbortController,
+        supportsAppend: false,
+        fallbackEligible: false,
+      });
+      const result = await runWithRunner(this.createCodexRunnerForPending(pending), typingTicket);
+      finalizeSuccess(result);
     } catch (error) {
-      if (error instanceof CodexTurnInterruptedError) {
+      let resolvedError = error;
+      if (resolvedError instanceof CodexTurnFallbackRequestedError && resolvedError.targetBackend === "exec") {
+        try {
+          typingTicket = await client.getTypingTicket({
+            peerUserId: pending.peerUserId,
+            contextToken: pending.contextToken,
+          });
+        } catch {
+          typingTicket = undefined;
+        }
+        currentAbortController = new AbortController();
+        setActiveTask({
+          abortController: currentAbortController,
+          supportsAppend: false,
+          fallbackEligible: false,
+        });
+        this.stateStore.recordDiagnostic({
+          code: "reply_exec_fallback_requested",
+          accountId: pending.accountId,
+          detail: JSON.stringify({
+            conversationKey: pending.conversationKey,
+            threadId: pending.threadId ?? null,
+          }),
+        });
+        try {
+          const result = await runWithRunner(this.execCodexRunner, typingTicket);
+          finalizeSuccess(result);
+          return;
+        } catch (fallbackError) {
+          resolvedError = fallbackError;
+        }
+      }
+      if (resolvedError instanceof CodexTurnInterruptedError) {
         this.stateStore.markPendingMessageStatus(pending.id, {
           status: "interrupted" as PendingMessageRecord["status"],
           thread: pending.runnerBackend && pending.runnerThreadId
@@ -686,20 +783,20 @@ export class BridgeService {
                 runnerCwd: pending.runnerCwd,
               }
             : pending.threadId,
-          errorMessage: error.message,
+          errorMessage: resolvedError.message,
         });
         this.stateStore.recordDiagnostic({
           code: "reply_interrupted",
           accountId: pending.accountId,
           detail: JSON.stringify({
             conversationKey: pending.conversationKey,
-            error: error.message,
+            error: resolvedError.message,
           }),
         });
         this.stateStore.recordDeliveryAttempt({
           conversationKey: pending.conversationKey,
           status: "interrupted",
-          errorMessage: error.message,
+          errorMessage: resolvedError.message,
         });
         return;
       }
@@ -712,12 +809,12 @@ export class BridgeService {
               runnerCwd: pending.runnerCwd,
             }
           : pending.threadId,
-        errorMessage: error instanceof Error ? error.message : String(error),
+        errorMessage: resolvedError instanceof Error ? resolvedError.message : String(resolvedError),
       });
       this.stateStore.recordDiagnostic({
         code: "reply_failed",
         accountId: pending.accountId,
-        detail: error instanceof Error ? error.message : String(error),
+        detail: resolvedError instanceof Error ? resolvedError.message : String(resolvedError),
       });
     }
   }
@@ -738,9 +835,19 @@ export class BridgeService {
     };
   }
 
+  private formatIdleTimeoutMessage(timeoutMs: number): string {
+    const timeoutMinutes = Math.max(1, Math.round(timeoutMs / 60000));
+    return [
+      `⚠️ 当前任务已连续 ${timeoutMinutes} 分钟没有新的输出。`,
+      "默认策略是不切换 fallback，当前仍在继续等待。",
+      "如果你怀疑任务已经卡死，请发送 /stop 终止当前任务。",
+      "如果你要改用 exec fallback 重跑本轮任务，请发送 /fallback continue。",
+    ].join("\n");
+  }
+
   private async executeCommandAction(input: {
     conversation: ConversationRecord;
-    result: { action?: { type: "stop" } | { type: "restart_bridge" } | { type: "append"; guidance: string } | { type: "use_session"; threadId: string; afterSwitch?: "remember_non_test" | "clear_test_return" } | { type: "quota_read" } | { type: "pending_continue" } | { type: "pending_clear" } | undefined; responseText?: string | undefined };
+    result: { action?: { type: "stop" } | { type: "restart_bridge" } | { type: "fallback_continue" } | { type: "append"; guidance: string } | { type: "use_session"; threadId: string; afterSwitch?: "remember_non_test" | "clear_test_return" } | { type: "quota_read" } | { type: "pending_continue" } | { type: "pending_clear" } | undefined; responseText?: string | undefined };
     accountId: string;
   }): Promise<string | undefined> {
     if (!input.result.action) {
@@ -823,6 +930,19 @@ export class BridgeService {
       return "No active task is currently running for this chat.";
     }
     try {
+      if (input.result.action.type === "fallback_continue") {
+        if (task.runnerBackend !== "app_server") {
+          return "The current task is not running on app_server, so exec fallback is not available.";
+        }
+        if (!task.fallbackEligible) {
+          return "The current task has not hit the idle-timeout fallback prompt yet. Keep waiting, or use /stop if you believe it is stuck.";
+        }
+        task.fallbackEligible = false;
+        task.fallbackRequestedBackend = "exec";
+        task.abortController.abort(new CodexTurnFallbackRequestedError("exec", "Switching the current task to exec fallback from WeChat control command."));
+        await task.control?.interrupt?.();
+        return "Switching the current task to exec fallback. The original app_server turn has been stopped.";
+      }
       if (input.result.action.type === "stop") {
         task.abortController.abort(new CodexTurnInterruptedError("Interrupted from WeChat control command."));
         await task.control?.interrupt?.();
@@ -966,7 +1086,7 @@ export class BridgeService {
       const runtimePreferences = this.getRuntimePreferences();
       const pendingNewSessionName = this.getPendingNewSessionName(pending.conversationKey);
       return {
-        runTurn: async ({ cwd, prompt, threadName, model, reasoningEffort, signal, onProgress, onReasoningProgress, onTurnStarted }) => {
+        runTurn: async ({ cwd, prompt, threadName, model, reasoningEffort, signal, onProgress, onReasoningProgress, onIdleTimeout, onTurnStarted }) => {
         const primaryBackend = this.config.codexBackend;
         const fallbackBackend = primaryBackend === "app_server" ? "exec" : undefined;
         const conversation = this.stateStore.resolveConversation({
@@ -1009,6 +1129,7 @@ export class BridgeService {
           signal,
           onProgress,
           onReasoningProgress,
+          onIdleTimeout,
           onTurnStarted,
           primaryBackend,
           fallbackBackend,

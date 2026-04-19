@@ -48,6 +48,7 @@ type PendingConfirmation =
 type CommandAction =
   | { type: "stop" }
   | { type: "restart_bridge" }
+  | { type: "fallback_continue" }
   | { type: "append"; guidance: string }
   | { type: "use_session"; threadId: string; afterSwitch?: "remember_non_test" | "clear_test_return" }
   | { type: "quota_read" }
@@ -139,6 +140,7 @@ export function handleWechatControlCommand(input: {
           "- /quota - show the current Codex rate-limit snapshot",
           "- /skills - show the currently installed local and plugin skills",
           "- /stop - interrupt the current Codex task for this chat",
+          "- /fallback continue - switch the current timed-out app_server task to exec fallback",
           "- /restart - restart the current bridge daemon for this chat",
           "- /append <text> - steer the current in-flight Codex task with more guidance",
           "- /pending - show the current backlog review summary for this chat",
@@ -424,6 +426,20 @@ export function handleWechatControlCommand(input: {
         responseText: formatSystemReply("control", "Checking for an active task to stop for this chat."),
         action: { type: "stop" },
       };
+    case "fallback": {
+      const subcommand = parsed.args[0]?.trim().toLowerCase();
+      if (subcommand === "continue") {
+        return {
+          handled: true,
+          responseText: formatSystemReply("warning", "Checking whether the current app_server task can switch to exec fallback."),
+          action: { type: "fallback_continue" },
+        };
+      }
+      return {
+        handled: true,
+        responseText: formatSystemReply("warning", "Usage: /fallback continue"),
+      };
+    }
     case "append": {
       const guidance = parsed.args.join(" ").trim();
       if (!guidance) {

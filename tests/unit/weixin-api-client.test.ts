@@ -100,4 +100,43 @@ describe("Weixin API request builders", () => {
 
     globalThis.fetch = originalFetch;
   });
+
+  test("retries transient transport fetch failures for sendmessage with the same client id", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("fetch failed"))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ret: 0 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    const client = new HttpWeixinClient({
+      baseUrl: "https://example.test/",
+      token: "token",
+      appId: "app-id",
+      clientVersion: 65547,
+      packageVersion: "0.1.0",
+    });
+
+    const result = await client.sendTextMessage({
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-1",
+      text: "hello",
+    });
+
+    expect(result.messageId).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+
+    expect(firstBody.msg.client_id).toBeTruthy();
+    expect(secondBody.msg.client_id).toBe(firstBody.msg.client_id);
+
+    globalThis.fetch = originalFetch;
+  });
 });

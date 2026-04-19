@@ -152,6 +152,7 @@ describe("wechat control commands", () => {
       expect(result.responseText).toContain("\n- /quota");
     expect(result.responseText).toContain("\n- /skills");
     expect(result.responseText).toContain("\n- /stop");
+    expect(result.responseText).toContain("\n- /fallback continue");
     expect(result.responseText).toContain("\n- /append");
     expect(result.responseText).toContain("\n- /model");
     expect(result.responseText).toContain("\n- /effort");
@@ -217,6 +218,27 @@ describe("wechat control commands", () => {
       handled: true,
       responseText: "⚠️ Restarting the current bridge daemon after this reply is sent.",
       action: { type: "restart_bridge" },
+    });
+  });
+
+  test("returns a fallback-continue action for /fallback continue", () => {
+    const store = new FakeStore();
+    const result = handleWechatControlCommand({
+      text: "/fallback continue",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+      activeTask: {
+        prompt: "long running task",
+        runnerBackend: "app_server",
+      },
+    });
+
+    expect(result).toEqual({
+      handled: true,
+      responseText: "⚠️ Checking whether the current app_server task can switch to exec fallback.",
+      action: { type: "fallback_continue" },
     });
   });
 

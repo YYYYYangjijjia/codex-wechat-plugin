@@ -7,6 +7,8 @@ export type DeliveryRecorder = {
 
 const MAX_FINAL_MESSAGE_CHARS = 1200;
 const MAX_PROGRESS_MESSAGE_CHARS = 400;
+const SEND_TEXT_RETRY_LIMIT = 3;
+const MAX_INTERIM_MESSAGES = 5;
 
 export type ReplyOrchestrator = {
   handleInboundMessage(input: {
@@ -22,6 +24,7 @@ export type ReplyOrchestrator = {
     reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | undefined;
     showFinalSummary?: boolean | undefined;
     signal?: AbortSignal | undefined;
+    onIdleTimeout?: Parameters<CodexRunner["runTurn"]>[0]["onIdleTimeout"];
     onTurnStarted?: Parameters<CodexRunner["runTurn"]>[0]["onTurnStarted"];
   }): Promise<{
     runnerBackend: RunnerBackend;
@@ -55,16 +58,34 @@ export function createReplyOrchestrator(input: {
       let fencedStructuredBlockBuffer = "";
       let plainStructuredBlockBuffer = "";
       const emittedAnswerProseParts: string[] = [];
+      let interimMessagesSent = 0;
+      let suppressInterimMessages = false;
 
       const sendAnswerProgress = async (text: string, includeInVisibleFinalPrefix: boolean): Promise<void> => {
-        await input.weixinClient.sendTextMessage({
-          peerUserId: message.peerUserId,
-          contextToken: message.contextToken,
-          text,
-        });
         if (includeInVisibleFinalPrefix) {
           emittedAnswerProseParts.push(text);
         }
+        if (suppressInterimMessages || interimMessagesSent >= MAX_INTERIM_MESSAGES) {
+          return;
+        }
+        const outbound = await sendTextMessageWithRetry({
+          weixinClient: input.weixinClient,
+          peerUserId: message.peerUserId,
+          contextToken: message.contextToken,
+          text,
+          fatal: false,
+        });
+        if (!outbound) {
+          suppressInterimMessages = true;
+          input.stateStore.recordDeliveryAttempt({
+            conversationKey: message.conversationKey,
+            status: "progress_failed",
+            errorMessage: "Progress delivery failed after retries.",
+            finalMessage: text,
+          });
+          return;
+        }
+        interimMessagesSent += 1;
         input.stateStore.recordDeliveryAttempt({
           conversationKey: message.conversationKey,
           status: "progress_sent",
@@ -211,17 +232,34 @@ export function createReplyOrchestrator(input: {
             if (!text) {
               return;
             }
-            await input.weixinClient.sendTextMessage({
+            if (suppressInterimMessages || interimMessagesSent >= MAX_INTERIM_MESSAGES) {
+              return;
+            }
+            const outbound = await sendTextMessageWithRetry({
+              weixinClient: input.weixinClient,
               peerUserId: message.peerUserId,
               contextToken: message.contextToken,
               text,
+              fatal: false,
             });
+            if (!outbound) {
+              suppressInterimMessages = true;
+              input.stateStore.recordDeliveryAttempt({
+                conversationKey: message.conversationKey,
+                status: "thinking_failed",
+                errorMessage: "Thinking delivery failed after retries.",
+                finalMessage: text,
+              });
+              return;
+            }
+            interimMessagesSent += 1;
             input.stateStore.recordDeliveryAttempt({
               conversationKey: message.conversationKey,
               status: "thinking_sent",
               finalMessage: text,
             });
           },
+          onIdleTimeout: message.onIdleTimeout,
           onTurnStarted: message.onTurnStarted,
         });
         runnerMs = Date.now() - runnerStartedAt;
@@ -425,14 +463,54 @@ async function sendFinalSummary(input: {
     const text = parts.length === 1
       ? formatFinalAnswerChunk(parts[index]!)
       : formatFinalAnswerChunkPart(parts[index]!, index + 1, parts.length);
-    const outbound = await input.weixinClient.sendTextMessage({
+    const outbound = await sendTextMessageWithRetry({
+      weixinClient: input.weixinClient,
       peerUserId: input.peerUserId,
       contextToken: input.contextToken,
       text,
+      fatal: true,
     });
+    if (!outbound) {
+      throw new Error("Final summary delivery unexpectedly returned no outbound message id.");
+    }
     lastMessageId = outbound.messageId;
   }
   return { messageId: lastMessageId };
+}
+
+async function sendTextMessageWithRetry(input: {
+  weixinClient: WeixinClient;
+  peerUserId: string;
+  contextToken: string;
+  text: string;
+  fatal: boolean;
+}): Promise<{ messageId: string } | undefined> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= SEND_TEXT_RETRY_LIMIT; attempt += 1) {
+    try {
+      return await input.weixinClient.sendTextMessage({
+        peerUserId: input.peerUserId,
+        contextToken: input.contextToken,
+        text: input.text,
+      });
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableSendError(error) || attempt >= SEND_TEXT_RETRY_LIMIT) {
+        break;
+      }
+    }
+  }
+  if (input.fatal) {
+    throw lastError;
+  }
+  return undefined;
+}
+
+function isRetryableSendError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return /fetch failed/i.test(error.message);
 }
 
 function splitFinalSummary(text: string, maxChars: number): string[] {

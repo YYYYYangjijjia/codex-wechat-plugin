@@ -250,6 +250,7 @@ npm run typecheck
 - `/yes` - confirm the current pending destructive action.
 - `/no` - cancel the current pending destructive action.
 - `/append <text>` - append steering text to the currently running task when supported.
+- `/fallback continue` - switch an idle timed-out `app_server` task to `exec` fallback only after you explicitly allow it.
 - `/stop` - stop the currently running task for this chat.
 - `/restart` - restart the current bridge daemon for this chat after the confirmation reply is sent.
 - `/pending` - show the current backlog review state for this chat.

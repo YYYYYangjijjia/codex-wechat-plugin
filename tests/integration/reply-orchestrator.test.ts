@@ -253,6 +253,246 @@ describe("reply orchestrator", () => {
     ]);
   });
 
+  test("keeps going and still sends the final summary when a progress chunk exhausts fetch retries", async () => {
+    const events: string[] = [];
+    const store = new FakeStore();
+    const orchestrator = createReplyOrchestrator({
+      stateStore: store,
+      codexRunner: {
+        async runTurn(input) {
+          events.push("runner");
+          await input.onProgress?.("line one.");
+          await input.onProgress?.("line two.");
+          return { runnerBackend: "app_server", threadId: "thread-1", finalMessage: "line one.\nline two.\nfinal wrap-up", cwd: "C:/repo/codex-wechat-plugin" };
+        },
+      },
+      weixinClient: {
+        async setTyping() {
+          events.push("typing:start");
+        },
+        async sendTextMessage(input) {
+          events.push(`send:${input.text}`);
+          if (input.text === "line two.") {
+            throw new Error("fetch failed");
+          }
+          return { messageId: `msg-${events.length}` };
+        },
+        async stopTyping() {
+          events.push("typing:stop");
+        },
+      },
+    });
+
+    const result = await orchestrator.handleInboundMessage({
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-1",
+      prompt: "hello",
+      typingTicket: "ticket-1",
+    });
+
+    expect(result.outboundMessageId).toMatch(/^msg-/);
+    expect(events).toEqual([
+      "typing:start",
+      "runner",
+      "send:line one.",
+      "send:line two.",
+      "send:line two.",
+      "send:line two.",
+      "typing:stop",
+      "send:<FINAL>:\nline one.\nline two.\nfinal wrap-up",
+    ]);
+    expect(store.deliveries).toContainEqual({
+      conversationKey: "acct-1:user-a@im.wechat",
+      status: "progress_failed",
+      errorMessage: "Progress delivery failed after retries.",
+      finalMessage: "line two.",
+    });
+    expect(store.deliveries).toContainEqual({
+      conversationKey: "acct-1:user-a@im.wechat",
+      status: "sent",
+      finalMessage: "line one.\nline two.\nfinal wrap-up",
+    });
+  });
+
+  test("retries a transient fetch failure while sending the final summary", async () => {
+    const events: string[] = [];
+    const store = new FakeStore();
+    let firstFinalAttempt = true;
+    const orchestrator = createReplyOrchestrator({
+      stateStore: store,
+      codexRunner: {
+        async runTurn() {
+          events.push("runner");
+          return { runnerBackend: "app_server", threadId: "thread-1", finalMessage: "final answer", cwd: "C:/repo/codex-wechat-plugin" };
+        },
+      },
+      weixinClient: {
+        async setTyping() {
+          events.push("typing:start");
+        },
+        async sendTextMessage(input) {
+          events.push(`send:${input.text}`);
+          if (input.text === "<FINAL>:\nfinal answer" && firstFinalAttempt) {
+            firstFinalAttempt = false;
+            throw new Error("fetch failed");
+          }
+          return { messageId: `msg-${events.length}` };
+        },
+        async stopTyping() {
+          events.push("typing:stop");
+        },
+      },
+    });
+
+    const result = await orchestrator.handleInboundMessage({
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-1",
+      prompt: "hello",
+      typingTicket: "ticket-1",
+    });
+
+    expect(result.outboundMessageId).toMatch(/^msg-/);
+    expect(events).toEqual([
+      "typing:start",
+      "runner",
+      "typing:stop",
+      "send:<FINAL>:\nfinal answer",
+      "send:<FINAL>:\nfinal answer",
+    ]);
+    expect(store.deliveries).toEqual([{
+      conversationKey: "acct-1:user-a@im.wechat",
+      status: "sent",
+      finalMessage: "final answer",
+    }]);
+  });
+
+  test("caps interim progress sends and still delivers the final summary", async () => {
+    const events: string[] = [];
+    const store = new FakeStore();
+    const orchestrator = createReplyOrchestrator({
+      stateStore: store,
+      codexRunner: {
+        async runTurn(input) {
+          events.push("runner");
+          for (let index = 1; index <= 8; index += 1) {
+            await input.onProgress?.(`${index}. chunk ${index}.`);
+          }
+          return {
+            runnerBackend: "app_server",
+            threadId: "thread-1",
+            finalMessage: Array.from({ length: 8 }, (_, index) => `${index + 1}. chunk ${index + 1}.`).join("\n"),
+            cwd: "C:/repo/codex-wechat-plugin",
+          };
+        },
+      },
+      weixinClient: {
+        async setTyping() {
+          events.push("typing:start");
+        },
+        async sendTextMessage(input) {
+          events.push(`send:${input.text}`);
+          return { messageId: `msg-${events.length}` };
+        },
+        async stopTyping() {
+          events.push("typing:stop");
+        },
+      },
+    });
+
+    await orchestrator.handleInboundMessage({
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-1",
+      prompt: "hello",
+      typingTicket: "ticket-1",
+    });
+
+    expect(events).toEqual([
+      "typing:start",
+      "runner",
+      "send:1. chunk 1.",
+      "send:2. chunk 2.",
+      "send:3. chunk 3.",
+      "send:4. chunk 4.",
+      "send:5. chunk 5.",
+      "typing:stop",
+      "send:<FINAL>:\n1. chunk 1.\n2. chunk 2.\n3. chunk 3.\n4. chunk 4.\n5. chunk 5.\n6. chunk 6.\n7. chunk 7.\n8. chunk 8.",
+    ]);
+  });
+
+  test("suppresses later interim messages after the first nonfatal delivery failure and still sends final", async () => {
+    const events: string[] = [];
+    const store = new FakeStore();
+    const orchestrator = createReplyOrchestrator({
+      stateStore: store,
+      codexRunner: {
+        async runTurn(input) {
+          events.push("runner");
+          await input.onProgress?.("line one.");
+          await input.onProgress?.("line two.");
+          await input.onProgress?.("line three.");
+          return {
+            runnerBackend: "app_server",
+            threadId: "thread-1",
+            finalMessage: "line one.\nline two.\nline three.",
+            cwd: "C:/repo/codex-wechat-plugin",
+          };
+        },
+      },
+      weixinClient: {
+        async setTyping() {
+          events.push("typing:start");
+        },
+        async sendTextMessage(input) {
+          events.push(`send:${input.text}`);
+          if (input.text === "line two.") {
+            throw new Error("sendmessage failed: ret=-2 (the current reply context is no longer valid; wait for a fresh inbound message to refresh context_token before sending again)");
+          }
+          return { messageId: `msg-${events.length}` };
+        },
+        async stopTyping() {
+          events.push("typing:stop");
+        },
+      },
+    });
+
+    const result = await orchestrator.handleInboundMessage({
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-1",
+      prompt: "hello",
+      typingTicket: "ticket-1",
+    });
+
+    expect(result.outboundMessageId).toMatch(/^msg-/);
+
+    expect(events).toEqual([
+      "typing:start",
+      "runner",
+      "send:line one.",
+      "send:line two.",
+      "typing:stop",
+      "send:<FINAL>:\nline one.\nline two.\nline three.",
+    ]);
+    expect(store.deliveries).toContainEqual({
+      conversationKey: "acct-1:user-a@im.wechat",
+      status: "progress_failed",
+      errorMessage: "Progress delivery failed after retries.",
+      finalMessage: "line two.",
+    });
+    expect(store.deliveries).toContainEqual({
+      conversationKey: "acct-1:user-a@im.wechat",
+      status: "sent",
+      finalMessage: "line one.\nline two.\nline three.",
+    });
+  });
+
   test("can suppress the final full summary while keeping progress chunks", async () => {
     const events: string[] = [];
     const store = new FakeStore();

@@ -8,6 +8,16 @@ export class CodexTurnInterruptedError extends Error {
   }
 }
 
+export class CodexTurnFallbackRequestedError extends Error {
+  public constructor(
+    public readonly targetBackend: RunnerBackend,
+    message = `Codex turn fallback requested: ${targetBackend}.`,
+  ) {
+    super(message);
+    this.name = "CodexTurnFallbackRequestedError";
+  }
+}
+
 export type ActiveTurnControl = {
   runnerBackend: RunnerBackend;
   threadId?: string | undefined;
@@ -35,6 +45,12 @@ export type CodexRunner = {
     signal?: AbortSignal | undefined;
     onProgress?: ((chunk: string) => Promise<void>) | undefined;
     onReasoningProgress?: ((chunk: string) => Promise<void>) | undefined;
+    onIdleTimeout?: ((input: {
+      runnerBackend: "app_server";
+      threadId?: string | undefined;
+      turnId?: string | undefined;
+      timeoutMs: number;
+    }) => Promise<void>) | undefined;
     onTurnStarted?: ((control: ActiveTurnControl) => void) | undefined;
   }): Promise<CodexTurnResult>;
 };

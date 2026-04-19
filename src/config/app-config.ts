@@ -61,7 +61,7 @@ export function loadBridgeConfig(workspaceDir = process.cwd()): BridgeConfig {
     skipGitRepoCheck: process.env.CODEX_SKIP_GIT_REPO_CHECK !== "false",
     appServerListenUrl: process.env.CODEX_APP_SERVER_URL?.trim() || "ws://127.0.0.1:4500",
     appServerStartupTimeoutMs: Number.parseInt(process.env.CODEX_APP_SERVER_STARTUP_TIMEOUT_MS ?? "10000", 10),
-    appServerTurnTimeoutMs: Number.parseInt(process.env.CODEX_APP_SERVER_TURN_TIMEOUT_MS ?? "60000", 10),
+    appServerTurnTimeoutMs: Number.parseInt(process.env.CODEX_APP_SERVER_TURN_TIMEOUT_MS ?? "300000", 10),
     longPollTimeoutMs: Number.parseInt(process.env.WECHAT_LONG_POLL_TIMEOUT_MS ?? "35000", 10),
     loopIdleDelayMs: Number.parseInt(process.env.WECHAT_LOOP_IDLE_DELAY_MS ?? "1000", 10),
   };

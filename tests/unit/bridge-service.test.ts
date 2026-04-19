@@ -3,6 +3,7 @@
 import { BridgeService } from "../../src/daemon/bridge-service.js";
 import { BridgeRestartRequestedError } from "../../src/daemon/bridge-restart-requested-error.js";
 import type { BridgeConfig } from "../../src/config/app-config.js";
+import { CodexTurnFallbackRequestedError } from "../../src/codex/codex-runner.js";
 import { MessageItemType } from "../../src/weixin/weixin-api-client.js";
 
 function makeConfig(): BridgeConfig {
@@ -109,6 +110,57 @@ describe("BridgeService", () => {
       accountId: "acct-1",
       detail: expect.stringContaining("context is no longer valid"),
     }));
+  });
+
+  test("switches an idle-timed-out app_server task to exec fallback only after an explicit command", async () => {
+    const service = new BridgeService(makeConfig(), {
+      getRuntimeState: vi.fn(),
+      saveRuntimeState: vi.fn(),
+      recordDiagnostic: vi.fn(),
+      listAccounts: vi.fn(() => []),
+      listPendingMessages: vi.fn(() => []),
+      listConversations: vi.fn(() => []),
+      listDiagnostics: vi.fn(() => []),
+    } as any);
+    const interrupt = vi.fn(async () => undefined);
+    const abortController = new AbortController();
+    (service as any).activeTasks.set("acct-1:user-a@im.wechat", {
+      pendingMessageId: 9,
+      conversationKey: "acct-1:user-a@im.wechat",
+      prompt: "check gpu usage",
+      abortController,
+      runnerBackend: "app_server",
+      threadId: "thread-app-1",
+      turnId: "turn-1",
+      supportsAppend: true,
+      fallbackEligible: true,
+      control: {
+        runnerBackend: "app_server",
+        threadId: "thread-app-1",
+        turnId: "turn-1",
+        supportsAppend: true,
+        interrupt,
+        append: vi.fn(),
+      },
+    });
+
+    const result = await (service as any).executeCommandAction({
+      conversation: {
+        conversationKey: "acct-1:user-a@im.wechat",
+        accountId: "acct-1",
+        peerUserId: "user-a@im.wechat",
+      },
+      result: {
+        action: { type: "fallback_continue" },
+        responseText: "unused",
+      },
+      accountId: "acct-1",
+    });
+
+    expect(result).toContain("Switching the current task to exec fallback");
+    expect(interrupt).toHaveBeenCalledTimes(1);
+    expect(abortController.signal.aborted).toBe(true);
+    expect(abortController.signal.reason).toBeInstanceOf(CodexTurnFallbackRequestedError);
   });
 
   test("stores the latest raw inbound message shape for protocol debugging", async () => {

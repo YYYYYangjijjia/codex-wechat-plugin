@@ -180,32 +180,57 @@ async function fetchJson<T>(input: {
   appId: string;
   clientVersion: number;
   timeoutMs?: number | undefined;
+  retryLimit?: number | undefined;
+  retryDelayMs?: number | undefined;
 }): Promise<T> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? 15000);
-  try {
-    const url = new URL(input.endpoint, input.baseUrl.endsWith("/") ? input.baseUrl : `${input.baseUrl}/`);
-    const bodyText = input.body === undefined ? undefined : JSON.stringify(input.body);
-    const response = await fetch(url, {
-      method: input.method,
-      headers: buildAuthenticatedHeaders({
-        token: input.token,
-        appId: input.appId,
-        clientVersion: input.clientVersion,
-        randomWechatUin: randomWechatUin(),
-        contentLength: bodyText ? Buffer.byteLength(bodyText, "utf8") : undefined,
-      }),
-      ...(bodyText === undefined ? {} : { body: bodyText }),
-      signal: controller.signal,
-    });
-    const raw = await response.text();
-    if (!response.ok) {
-      throw new Error(`${input.method} ${url.pathname} failed: ${response.status} ${raw}`);
+  const url = new URL(input.endpoint, input.baseUrl.endsWith("/") ? input.baseUrl : `${input.baseUrl}/`);
+  const bodyText = input.body === undefined ? undefined : JSON.stringify(input.body);
+  const retryLimit = input.retryLimit ?? 0;
+  const retryDelayMs = input.retryDelayMs ?? 250;
+
+  for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? 15000);
+    try {
+      const response = await fetch(url, {
+        method: input.method,
+        headers: buildAuthenticatedHeaders({
+          token: input.token,
+          appId: input.appId,
+          clientVersion: input.clientVersion,
+          randomWechatUin: randomWechatUin(),
+          contentLength: bodyText ? Buffer.byteLength(bodyText, "utf8") : undefined,
+        }),
+        ...(bodyText === undefined ? {} : { body: bodyText }),
+        signal: controller.signal,
+      });
+      const raw = await response.text();
+      if (!response.ok) {
+        throw new Error(`${input.method} ${url.pathname} failed: ${response.status} ${raw}`);
+      }
+      return JSON.parse(raw) as T;
+    } catch (error) {
+      if (attempt >= retryLimit || !isTransientFetchError(error)) {
+        throw error;
+      }
+      await sleep(retryDelayMs * (attempt + 1));
+    } finally {
+      clearTimeout(timer);
     }
-    return JSON.parse(raw) as T;
-  } finally {
-    clearTimeout(timer);
   }
+
+  throw new Error("unreachable");
+}
+
+function isTransientFetchError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return /fetch failed/i.test(error.message);
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function assertBusinessSuccess(
@@ -291,6 +316,8 @@ export class HttpWeixinClient implements WeixinClient {
       appId: this.options.appId,
       clientVersion: this.options.clientVersion,
       timeoutMs: input.timeoutMs ?? 35000,
+      retryLimit: 1,
+      retryDelayMs: 500,
       body: {
         get_updates_buf: input.cursor ?? "",
         base_info: { channel_version: this.options.packageVersion },
@@ -307,6 +334,8 @@ export class HttpWeixinClient implements WeixinClient {
       appId: this.options.appId,
       clientVersion: this.options.clientVersion,
       timeoutMs: 10000,
+      retryLimit: 1,
+      retryDelayMs: 300,
       body: {
         ilink_user_id: input.peerUserId,
         context_token: input.contextToken,
@@ -326,6 +355,8 @@ export class HttpWeixinClient implements WeixinClient {
       appId: this.options.appId,
       clientVersion: this.options.clientVersion,
       timeoutMs: 15000,
+      retryLimit: 2,
+      retryDelayMs: 400,
       body: {
         ...buildSendMessageRequest({
           toUserId: input.peerUserId,

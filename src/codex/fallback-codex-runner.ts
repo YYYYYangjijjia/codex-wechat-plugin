@@ -1,4 +1,10 @@
-import type { CodexRunner, CodexTurnResult, RunnerBackend } from "./codex-runner.js";
+import {
+  CodexTurnFallbackRequestedError,
+  CodexTurnInterruptedError,
+  type CodexRunner,
+  type CodexTurnResult,
+  type RunnerBackend,
+} from "./codex-runner.js";
 
 export async function runTurnWithFallback(input: {
   cwd: string;
@@ -9,6 +15,7 @@ export async function runTurnWithFallback(input: {
   signal?: AbortSignal | undefined;
   onProgress?: ((chunk: string) => Promise<void>) | undefined;
   onReasoningProgress?: ((chunk: string) => Promise<void>) | undefined;
+  onIdleTimeout?: Parameters<CodexRunner["runTurn"]>[0]["onIdleTimeout"];
   onTurnStarted?: ((control: {
     runnerBackend: RunnerBackend;
     threadId?: string | undefined;
@@ -39,15 +46,32 @@ export async function runTurnWithFallback(input: {
       signal: input.signal,
       onProgress: input.onProgress,
       onReasoningProgress: input.onReasoningProgress,
+      onIdleTimeout: input.onIdleTimeout,
       onTurnStarted: input.onTurnStarted,
     });
   } catch (error) {
+    const normalizedError = error instanceof Error ? error : new Error(String(error));
+    if (normalizedError instanceof CodexTurnInterruptedError || normalizedError instanceof CodexTurnFallbackRequestedError) {
+      throw normalizedError;
+    }
+    if (
+      input.primaryBackend === "app_server"
+      && input.fallbackBackend === "exec"
+      && input.conversationThread?.runnerBackend === "app_server"
+      && input.conversationThread.runnerThreadId
+    ) {
+      throw normalizedError;
+    }
     if (!input.fallbackBackend) {
-      throw error;
+      throw normalizedError;
     }
     const fallbackRunner = input.runners[input.fallbackBackend];
-    const normalizedError = error instanceof Error ? error : new Error(String(error));
     input.onFallback?.({ from: input.primaryBackend, to: input.fallbackBackend, error: normalizedError });
+    await input.onProgress?.(buildFallbackNotice({
+      from: input.primaryBackend,
+      to: input.fallbackBackend,
+      error: normalizedError,
+    }));
     return await fallbackRunner.runTurn({
       cwd: input.cwd,
       prompt: input.prompt,
@@ -61,6 +85,14 @@ export async function runTurnWithFallback(input: {
       onTurnStarted: input.onTurnStarted,
     });
   }
+}
+
+function buildFallbackNotice(input: { from: RunnerBackend; to: RunnerBackend; error: Error }): string {
+  return [
+    `⚠️ Codex backend switched from ${input.from} to ${input.to}.`,
+    `原因: ${input.error.message}`,
+    "本轮回复可能失去当前 session 的实时控制能力。",
+  ].join("\n");
 }
 
 function selectThreadId(

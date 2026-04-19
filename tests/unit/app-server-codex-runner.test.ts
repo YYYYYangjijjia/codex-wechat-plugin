@@ -432,22 +432,81 @@ describe("AppServerCodexRunner", () => {
     expect(client.closeCalls).toBeGreaterThanOrEqual(1);
   });
 
-  test("times out a stuck turn and resets the client connection", async () => {
+  test("emits a single idle-timeout notice and keeps waiting for the turn result", async () => {
     const processManager = new FakeProcessManager();
     const client = new FakeAppServerClient();
-    client.startTurnImplementation = async () => await new Promise(() => undefined);
+    client.startTurnImplementation = async (input) => {
+      input.onStarted?.("turn-1");
+      await sleep(30);
+      input.onUpdate?.("finished.");
+      return {
+        threadId: input.threadId,
+        turnId: "turn-1",
+        finalMessage: "finished.",
+      };
+    };
     const runner = new AppServerCodexRunner({
       processManager,
       client,
       turnTimeoutMs: 20,
     });
+    const notices: Array<{ threadId?: string; turnId?: string; timeoutMs: number }> = [];
 
-    await expect(runner.runTurn({
+    const result = await runner.runTurn({
       cwd: TEST_CWD,
       prompt: "hello",
       threadId: "thread-existing",
-    })).rejects.toThrow("timed out");
+      onIdleTimeout: async (input) => {
+        notices.push({
+          timeoutMs: input.timeoutMs,
+          ...(input.threadId ? { threadId: input.threadId } : {}),
+          ...(input.turnId ? { turnId: input.turnId } : {}),
+        });
+      },
+    });
 
-    expect(client.closeCalls).toBe(1);
+    expect(result.finalMessage).toBe("finished.");
+    expect(notices).toEqual([{ threadId: "thread-existing", turnId: "turn-1", timeoutMs: 20 }]);
+    expect(client.closeCalls).toBe(0);
+  });
+
+  test("does not time out while the turn keeps emitting updates within the idle timeout window", async () => {
+    const processManager = new FakeProcessManager();
+    const client = new FakeAppServerClient();
+    client.startTurnImplementation = async (input) => {
+      input.onStarted?.("turn-1");
+      await sleep(10);
+      input.onUpdate?.("first sentence. ");
+      await sleep(10);
+      input.onUpdate?.("first sentence. second sentence. ");
+      await sleep(10);
+      return {
+        threadId: input.threadId,
+        turnId: "turn-1",
+        finalMessage: "first sentence. second sentence.",
+      };
+    };
+    const runner = new AppServerCodexRunner({
+      processManager,
+      client,
+      turnTimeoutMs: 20,
+    });
+    const chunks: string[] = [];
+
+    const result = await runner.runTurn({
+      cwd: TEST_CWD,
+      prompt: "hello",
+      onProgress: async (chunk) => {
+        chunks.push(chunk);
+      },
+    });
+
+    expect(result.finalMessage).toBe("first sentence. second sentence.");
+    expect(chunks).toEqual(["first sentence. ", "second sentence. "]);
+    expect(client.closeCalls).toBe(0);
   });
 });
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}

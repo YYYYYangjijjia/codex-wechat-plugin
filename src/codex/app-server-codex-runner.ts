@@ -40,6 +40,12 @@ export class AppServerCodexRunner implements CodexRunner {
     signal?: AbortSignal | undefined;
     onProgress?: ((chunk: string) => Promise<void>) | undefined;
     onReasoningProgress?: ((chunk: string) => Promise<void>) | undefined;
+    onIdleTimeout?: ((input: {
+      runnerBackend: "app_server";
+      threadId?: string | undefined;
+      turnId?: string | undefined;
+      timeoutMs: number;
+    }) => Promise<void>) | undefined;
     onTurnStarted?: ((control: {
       runnerBackend: "app_server";
       threadId?: string | undefined;
@@ -73,6 +79,17 @@ export class AppServerCodexRunner implements CodexRunner {
 
     try {
       let activeTurnId: string | undefined;
+      const idleTimeout = createIdleTimeoutNotice({
+        timeoutMs: this.options.turnTimeoutMs ?? 60_000,
+        onIdle: async () => {
+          await input.onIdleTimeout?.({
+            runnerBackend: "app_server",
+            threadId: thread.id,
+            turnId: activeTurnId,
+            timeoutMs: this.options.turnTimeoutMs ?? 60_000,
+          });
+        },
+      });
       const turnPromise = this.options.client.startTurn({
         threadId: thread.id,
         cwd: input.cwd,
@@ -81,6 +98,7 @@ export class AppServerCodexRunner implements CodexRunner {
         effort: input.reasoningEffort,
         onStarted: (turnId) => {
           activeTurnId = turnId;
+          idleTimeout.touch();
           input.onTurnStarted?.({
             runnerBackend: "app_server",
             threadId: thread.id,
@@ -95,6 +113,7 @@ export class AppServerCodexRunner implements CodexRunner {
           });
         },
         onUpdate: (text) => {
+          idleTimeout.touch();
           if (input.signal?.aborted || !input.onProgress) {
             return;
           }
@@ -104,6 +123,7 @@ export class AppServerCodexRunner implements CodexRunner {
         },
         onReasoningUpdate: (text) => {
           latestReasoningText = text;
+          idleTimeout.touch();
           if (input.signal?.aborted || !input.onReasoningProgress) {
             return;
           }
@@ -112,16 +132,14 @@ export class AppServerCodexRunner implements CodexRunner {
           }
         },
       });
-      const result = await withTimeout(
-        raceWithAbort(turnPromise, input.signal, async () => {
-          if (activeTurnId) {
-            await this.options.client.interruptTurn({ threadId: thread.id, turnId: activeTurnId }).catch(() => undefined);
-          }
-          this.resetClient();
-        }),
-        this.options.turnTimeoutMs ?? 60_000,
-        `Codex app-server turn for thread ${thread.id} timed out`,
-      );
+      const result = await raceWithAbort(turnPromise, input.signal, async () => {
+        idleTimeout.stop();
+        if (activeTurnId) {
+          await this.options.client.interruptTurn({ threadId: thread.id, turnId: activeTurnId }).catch(() => undefined);
+        }
+        this.resetClient();
+      });
+      idleTimeout.stop();
       await progressChain;
       await reasoningChain;
       if (input.onReasoningProgress && !input.signal?.aborted) {
@@ -290,6 +308,47 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
       },
     );
   });
+}
+
+function createIdleTimeoutNotice(input: {
+  timeoutMs: number;
+  onIdle: () => Promise<void>;
+}): {
+  touch: () => void;
+  stop: () => void;
+} {
+  let timer: NodeJS.Timeout | undefined;
+  let settled = false;
+  let notified = false;
+
+  const clear = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+  };
+
+  const touch = () => {
+    if (settled || notified) {
+      return;
+    }
+    clear();
+    timer = setTimeout(async () => {
+      if (settled || notified) {
+        return;
+      }
+      notified = true;
+      await input.onIdle();
+    }, input.timeoutMs);
+  };
+
+  return {
+    touch,
+    stop() {
+      settled = true;
+      clear();
+    },
+  };
 }
 
 async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined, onAbort: () => Promise<void>): Promise<T> {

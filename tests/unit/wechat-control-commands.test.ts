@@ -459,6 +459,24 @@ describe("wechat control commands", () => {
     expect(sessionResult.responseText).toContain("D:/live-workspace");
   });
 
+  test("reports that session names are unavailable on the exec backend", () => {
+    const store = new FakeStore();
+    const sessionResult = handleWechatControlCommand({
+      text: "/session",
+      stateStore: store,
+      conversation: makeConversation({
+        runnerBackend: "exec",
+        runnerThreadId: "exec-thread-1",
+        runnerCwd: "D:/GitHub/codex-wechat-plugin",
+      }),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+    });
+
+    expect(sessionResult.responseText).toContain("backend: exec");
+    expect(sessionResult.responseText).toContain("session name: unavailable on exec backend");
+  });
+
   test("prefixes status and warning replies with category emoji", () => {
     const store = new FakeStore();
     store.accounts = [makeAccount({})];

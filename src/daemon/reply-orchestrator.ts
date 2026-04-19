@@ -305,9 +305,9 @@ function splitProgressChunk(chunk: string): string[] {
   if (lines.length <= 1 && normalized.length <= MAX_PROGRESS_MESSAGE_CHARS) {
     return [normalized];
   }
-  const nonEmptyLines = lines
+  const nonEmptyLines = mergeOrderedListMarkerLines(lines
     .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+    .filter((line) => line.length > 0));
   if (nonEmptyLines.length > 1) {
     return nonEmptyLines.flatMap((line) => splitLongProgressLine(line));
   }
@@ -351,6 +351,24 @@ function splitLongProgressLine(line: string): string[] {
     parts.push(remaining);
   }
   return parts;
+}
+
+function mergeOrderedListMarkerLines(lines: string[]): string[] {
+  const merged: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (isOrderedListMarkerOnly(line) && index + 1 < lines.length) {
+      merged.push(`${line}\n${lines[index + 1]!}`);
+      index += 1;
+      continue;
+    }
+    merged.push(line);
+  }
+  return merged;
+}
+
+function isOrderedListMarkerOnly(line: string): boolean {
+  return /^\d+[.)、]$/.test(line);
 }
 
 function findProgressSplit(text: string, maxChars: number): number {

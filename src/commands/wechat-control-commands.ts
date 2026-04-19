@@ -801,11 +801,16 @@ function formatSession(input: {
   const threadId = conversation.runnerThreadId ?? conversation.codexThreadId ?? "none";
   const sessionName = input.currentSession?.name?.trim();
   const workspace = input.currentSession?.cwd ?? conversation.runnerCwd ?? "unknown";
+  const sessionNameText = sessionName && sessionName.length > 0
+    ? sessionName
+    : backend === "exec"
+      ? "unavailable on exec backend"
+      : "unknown";
   return [
     `conversation: ${conversation.conversationKey}`,
     `backend: ${backend}`,
     `session: ${threadId}`,
-    `session name: ${sessionName && sessionName.length > 0 ? sessionName : "unknown"}`,
+    `session name: ${sessionNameText}`,
     `workspace: ${workspace}`,
   ].join("\n");
 }

@@ -1,7 +1,7 @@
-﻿interface:
-  display_name: "WeChat Bridge: Task Finished Notifier"
+interface:
+  display_name: "Task Finished Notifier"
   short_description: "Send a structured completion notice through the local WeChat bridge"
   icon_small: "./assets/icon.png"
   icon_large: "./assets/icon.png"
   brand_color: "#0A6D46"
-  default_prompt: "Use $codex-wechat-bridge:task-finished-notifier to send a UTF-8-safe Task Finished notice into the connected WeChat / Weixin chat."
+  default_prompt: "Use $task-finished-notifier to send a UTF-8-safe Task Finished notice into the connected WeChat / Weixin chat."

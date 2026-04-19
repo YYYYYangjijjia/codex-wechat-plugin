@@ -8,11 +8,17 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $pluginRoot = Join-Path $HOME ".codex\plugins"
 $pluginTarget = Join-Path $pluginRoot $PluginName
+$pluginCacheRoot = Join-Path $pluginRoot "cache\local-personal-plugins"
+$pluginCacheTarget = Join-Path $pluginCacheRoot $PluginName
+$tmpPluginRoot = Join-Path $HOME ".codex\.tmp\plugins\plugins"
+$tmpPluginTarget = Join-Path $tmpPluginRoot $PluginName
 $marketplaceDir = Join-Path $HOME ".agents\plugins"
 $marketplacePath = Join-Path $marketplaceDir "marketplace.json"
 $marketplaceSourcePath = "./.codex/plugins/$PluginName"
 $copyDirectories = @(".codex-plugin", "assets", "skills", "dist")
 $copyFiles = @(".mcp.json", "package.json", "scripts\\wechat-bridge-tray.ps1")
+$cacheCopyDirectories = @(".codex-plugin", "assets", "skills", "dist", "node_modules", "scripts")
+$cacheCopyFiles = @(".mcp.json", "package.json")
 
 function Ensure-Directory([string]$Path) {
   New-Item -ItemType Directory -Force -Path $Path | Out-Null
@@ -31,10 +37,12 @@ function New-MarketplaceObject {
 function Copy-PluginPayload {
   param(
     [string]$SourceRoot,
-    [string]$TargetRoot
+    [string]$TargetRoot,
+    [string[]]$Directories = $copyDirectories,
+    [string[]]$Files = $copyFiles
   )
 
-  foreach ($directory in $copyDirectories) {
+  foreach ($directory in $Directories) {
     $sourceDir = Join-Path $SourceRoot $directory
     if (-not (Test-Path $sourceDir)) {
       continue
@@ -51,7 +59,7 @@ function Copy-PluginPayload {
     }
   }
 
-  foreach ($file in $copyFiles) {
+  foreach ($file in $Files) {
     $sourceFile = Join-Path $SourceRoot $file
     if (Test-Path $sourceFile) {
       $targetFile = Join-Path $TargetRoot $file
@@ -61,8 +69,51 @@ function Copy-PluginPayload {
   }
 }
 
+function Copy-CachePayload {
+  param(
+    [string]$SourceRoot,
+    [string]$TargetRoot
+  )
+
+  foreach ($directory in $cacheCopyDirectories) {
+    $sourceDir = Join-Path $SourceRoot $directory
+    if (-not (Test-Path $sourceDir)) {
+      continue
+    }
+
+    $targetDir = Join-Path $TargetRoot $directory
+    if (Test-Path $targetDir) {
+      Remove-Item -LiteralPath $targetDir -Recurse -Force
+    }
+
+    Ensure-Directory (Split-Path -Parent $targetDir)
+    Copy-Item -LiteralPath $sourceDir -Destination $targetDir -Recurse -Force
+  }
+
+  foreach ($file in $cacheCopyFiles) {
+    $sourceFile = Join-Path $SourceRoot $file
+    if (-not (Test-Path $sourceFile)) {
+      continue
+    }
+
+    $targetFile = Join-Path $TargetRoot $file
+    Ensure-Directory (Split-Path -Parent $targetFile)
+    Copy-Item -LiteralPath $sourceFile -Destination $targetFile -Force
+  }
+}
+
+function Read-PackageVersion([string]$PackagePath) {
+  $raw = Get-Content -Raw $PackagePath | ConvertFrom-Json
+  if (-not $raw.version) {
+    throw "Missing version in $PackagePath"
+  }
+
+  return [string]$raw.version
+}
+
 Ensure-Directory $pluginRoot
 Ensure-Directory $marketplaceDir
+Ensure-Directory $pluginCacheRoot
 
 if ((Test-Path $pluginTarget) -and -not $Force) {
   Write-Host "Replacing existing plugin payload at $pluginTarget"
@@ -84,6 +135,24 @@ try {
 $generatedLock = Join-Path $pluginTarget "package-lock.json"
 if (Test-Path $generatedLock) {
   cmd /c del /f /q "$generatedLock" | Out-Null
+}
+
+$pluginVersion = Read-PackageVersion (Join-Path $pluginTarget "package.json")
+$pluginCacheVersionTarget = Join-Path $pluginCacheTarget $pluginVersion
+
+Ensure-Directory $pluginCacheVersionTarget
+Copy-CachePayload -SourceRoot $pluginTarget -TargetRoot $pluginCacheVersionTarget
+
+if (Test-Path $pluginCacheTarget) {
+  Get-ChildItem $pluginCacheTarget -Directory | Where-Object { $_.Name -ne $pluginVersion } | ForEach-Object {
+    Write-Host "Removing stale cached plugin version at $($_.FullName)"
+    cmd /c rmdir /s /q "$($_.FullName)" | Out-Null
+  }
+}
+
+if (Test-Path $tmpPluginTarget) {
+  Write-Host "Clearing temporary expanded plugin bundle at $tmpPluginTarget"
+  cmd /c rmdir /s /q "$tmpPluginTarget" | Out-Null
 }
 
 $marketplace =

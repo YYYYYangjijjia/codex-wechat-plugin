@@ -1,5 +1,5 @@
-﻿---
-name: "codex-wechat-bridge:task-finished-notifier"
+---
+name: "task-finished-notifier"
 description: "Use when any Codex session finishes a task and you need to push a structured Task Finished notification into a WeChat / Weixin chat through the local bridge runtime."
 ---
 

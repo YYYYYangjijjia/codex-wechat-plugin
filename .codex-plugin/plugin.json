@@ -1,6 +1,6 @@
 {
   "name": "codex-wechat-bridge",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "Local Codex Desktop plugin bundle for bridging WeChat private chats into Codex workflows.",
   "author": {
     "name": "Codex WeChat Bridge Contributors"

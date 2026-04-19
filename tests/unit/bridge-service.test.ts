@@ -251,8 +251,9 @@ describe("BridgeService", () => {
     expect(enqueuePendingMessage).toHaveBeenCalledWith(expect.objectContaining({
       prompt: [
         "User is replying to a quoted WeChat message.",
+        "Treat the quoted message as primary context for the reply unless the new user message clearly changes topic.",
         "",
-        "Quoted message:",
+        "Quoted message (primary context):",
         "refresh token test",
         "",
         "New user message:",
@@ -352,8 +353,9 @@ describe("BridgeService", () => {
     expect(enqueuePendingMessage).toHaveBeenCalledWith(expect.objectContaining({
       prompt: [
         "User is replying to multiple quoted WeChat messages.",
+        "Treat the quoted messages as primary context for the reply unless the new user message clearly changes topic.",
         "",
-        "Quoted messages:",
+        "Quoted messages (primary context):",
         "1. first quoted message",
         "2. second quoted message",
         "",

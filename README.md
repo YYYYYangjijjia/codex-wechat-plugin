@@ -283,8 +283,8 @@ The bridge injects attachment metadata and local paths into the Codex prompt. Th
 - [`src/cli/mcp-server.ts`](./src/cli/mcp-server.ts): MCP server entrypoint
 - [`scripts/install-codex-plugin.ps1`](./scripts/install-codex-plugin.ps1): local Codex plugin installer
 - [`scripts/install-tray-launcher.ps1`](./scripts/install-tray-launcher.ps1): tray + desktop shortcut installer
-- [`skills/wechat-bridge-ops/SKILL.md`](./skills/wechat-bridge-ops/SKILL.md): bundled operational skill (`codex-wechat-bridge:ops`, displayed as `WeChat Bridge: Ops`)
-- [`skills/task-finished-notifier/SKILL.md`](./skills/task-finished-notifier/SKILL.md): bundled completion-notification skill (`codex-wechat-bridge:task-finished-notifier`, displayed as `WeChat Bridge: Task Finished Notifier`)
+- [`skills/wechat-bridge-ops/SKILL.md`](./skills/wechat-bridge-ops/SKILL.md): bundled operational skill (`wechat-bridge-ops`, displayed in Codex as `WeChat Bridge: Ops`)
+- [`skills/task-finished-notifier/SKILL.md`](./skills/task-finished-notifier/SKILL.md): bundled completion-notification skill (`wechat-bridge-task-finished-notifier`, displayed in Codex as `WeChat Bridge: Task Finished Notifier`)
 - [`docs/human-guide.md`](./docs/human-guide.md): operator-oriented guide
 - [`docs/codex-agent-guide.md`](./docs/codex-agent-guide.md): Codex-agent-oriented guide
 - [`docs/architecture.md`](./docs/architecture.md): architecture summary

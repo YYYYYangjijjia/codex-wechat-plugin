@@ -1,7 +1,7 @@
-﻿interface:
-  display_name: "WeChat Bridge: Ops"
+interface:
+  display_name: "WeChat Ops"
   short_description: "Inspect bridge state and recover WeChat / Weixin delivery issues"
   icon_small: "./assets/icon.png"
   icon_large: "./assets/icon.png"
   brand_color: "#0A6D46"
-  default_prompt: "Use $codex-wechat-bridge:ops to inspect WeChat / Weixin bridge state, confirm session mappings, or recover from login and delivery failures."
+  default_prompt: "Use $wechat-bridge-ops to inspect WeChat / Weixin bridge state, confirm session mappings, or recover from login and delivery failures."

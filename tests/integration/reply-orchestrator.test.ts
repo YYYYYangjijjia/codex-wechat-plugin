@@ -634,6 +634,57 @@ inputs`,
     ]);
   });
 
+  test("does not split an ordered-list marker from the following prose line during progress re-chunking", async () => {
+    const events: string[] = [];
+    const store = new FakeStore();
+    const orchestrator = createReplyOrchestrator({
+      stateStore: store,
+      codexRunner: {
+        async runTurn(input) {
+          events.push("runner");
+          await input.onProgress?.(`当前进度可以分成 4 块看。\n\n1.\n主功能已经打通**\n- WeChat / Weixin 私聊桥接到本地 Codex Desktop`);
+          return {
+            runnerBackend: "app_server",
+            threadId: "thread-1",
+            finalMessage: `当前进度可以分成 4 块看。\n\n1.\n主功能已经打通**\n- WeChat / Weixin 私聊桥接到本地 Codex Desktop`,
+            cwd: "C:/repo/other-workspace",
+          };
+        },
+      },
+      weixinClient: {
+        async setTyping() {
+          events.push("typing:start");
+        },
+        async sendTextMessage(input) {
+          events.push(`send:${input.text}`);
+          return { messageId: `msg-${events.length}` };
+        },
+        async stopTyping() {
+          events.push("typing:stop");
+        },
+      },
+    });
+
+    await orchestrator.handleInboundMessage({
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-1",
+      prompt: "status",
+      typingTicket: "ticket-1",
+      showFinalSummary: false,
+    });
+
+    expect(events).toEqual([
+      "typing:start",
+      "runner",
+      "send:当前进度可以分成 4 块看。",
+      "send:1.\n主功能已经打通**",
+      "send:- WeChat / Weixin 私聊桥接到本地 Codex Desktop",
+      "typing:stop",
+    ]);
+  });
+
   test("sends non-fenced code-like multiline output as a single structured block", async () => {
     const events: string[] = [];
     const store = new FakeStore();

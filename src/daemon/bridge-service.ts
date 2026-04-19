@@ -84,8 +84,9 @@ function buildInboundPrompt(message: NonNullable<GetUpdatesResponse["msgs"]>[num
   if (quotedTexts.length === 1) {
     return [
       "User is replying to a quoted WeChat message.",
+      "Treat the quoted message as primary context for the reply unless the new user message clearly changes topic.",
       "",
-      "Quoted message:",
+      "Quoted message (primary context):",
       quotedTexts[0]!,
       "",
       "New user message:",
@@ -94,8 +95,9 @@ function buildInboundPrompt(message: NonNullable<GetUpdatesResponse["msgs"]>[num
   }
   return [
     "User is replying to multiple quoted WeChat messages.",
+    "Treat the quoted messages as primary context for the reply unless the new user message clearly changes topic.",
     "",
-    "Quoted messages:",
+    "Quoted messages (primary context):",
     ...quotedTexts.map((text, index) => `${index + 1}. ${text}`),
     "",
     "New user message:",

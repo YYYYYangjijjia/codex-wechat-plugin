@@ -1,5 +1,5 @@
-﻿---
-name: "codex-wechat-bridge:ops"
+---
+name: "wechat-bridge-ops"
 description: "Use when operating, diagnosing, or manually intervening in the local Codex Desktop + WeChat / Weixin bridge through its MCP tools, especially for login, session mapping, pending messages, and failed deliveries."
 ---
 

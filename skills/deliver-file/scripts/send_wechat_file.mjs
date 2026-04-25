@@ -1,15 +1,14 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { DatabaseSync } from "node:sqlite";
-
-import { loadBridgeConfig } from "../../../dist/src/config/app-config.js";
-import { BridgeService } from "../../../dist/src/daemon/bridge-service.js";
-import { createStateStore } from "../../../dist/src/state/sqlite-state-store.js";
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const pluginRoot = path.resolve(__dirname, "..", "..", "..");
-const defaultStateDb = path.join(pluginRoot, "state", "bridge.sqlite");
+const bundleRoot = path.resolve(__dirname, '..', '..', '..');
+const installedPluginRoot = path.join(os.homedir(), '.codex', 'plugins', 'codex-wechat-bridge');
+const defaultStateDb = path.join(installedPluginRoot, 'state', 'bridge.sqlite');
 
 function parseArgs(argv) {
   const options = {
@@ -18,22 +17,22 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     switch (token) {
-      case "--dry-run":
+      case '--dry-run':
         options.dryRun = true;
         break;
-      case "--state-db":
+      case '--state-db':
         options.stateDb = argv[++index];
         break;
-      case "--account-id":
+      case '--account-id':
         options.accountId = argv[++index];
         break;
-      case "--peer-user-id":
+      case '--peer-user-id':
         options.peerUserId = argv[++index];
         break;
-      case "--context-token":
+      case '--context-token':
         options.contextToken = argv[++index];
         break;
-      case "--file":
+      case '--file':
         options.filePath = argv[++index];
         break;
       default:
@@ -44,7 +43,7 @@ function parseArgs(argv) {
 }
 
 function requireText(value, label) {
-  if (typeof value !== "string" || !value.trim()) {
+  if (typeof value !== 'string' || !value.trim()) {
     throw new Error(`Missing required argument: ${label}`);
   }
   return value.trim();
@@ -52,6 +51,34 @@ function requireText(value, label) {
 
 function openDatabase(filePath) {
   return new DatabaseSync(filePath, { open: true });
+}
+
+function resolveRuntimePluginRoot(options) {
+  if (options.stateDb) {
+    return path.dirname(path.dirname(path.resolve(options.stateDb)));
+  }
+  if (fs.existsSync(path.join(installedPluginRoot, 'dist', 'src', 'cli', 'status.js'))) {
+    return installedPluginRoot;
+  }
+  return bundleRoot;
+}
+
+async function loadRuntimeModules(runtimeRoot) {
+  const toUrl = (relativePath) => pathToFileURL(path.join(runtimeRoot, relativePath)).href;
+  const [
+    { loadBridgeConfig },
+    { BridgeService },
+    { createStateStore },
+  ] = await Promise.all([
+    import(toUrl('dist/src/config/app-config.js')),
+    import(toUrl('dist/src/daemon/bridge-service.js')),
+    import(toUrl('dist/src/state/sqlite-state-store.js')),
+  ]);
+  return {
+    loadBridgeConfig,
+    BridgeService,
+    createStateStore,
+  };
 }
 
 function resolveAccount(db, options) {
@@ -97,8 +124,11 @@ function resolveContextToken(db, accountId, peerUserId, explicitToken) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const filePath = path.resolve(requireText(options.filePath, "--file"));
-  const db = openDatabase(options.stateDb || defaultStateDb);
+  const filePath = path.resolve(requireText(options.filePath, '--file'));
+  const runtimeRoot = resolveRuntimePluginRoot(options);
+  const runtimeModules = await loadRuntimeModules(runtimeRoot);
+  const dbPath = options.stateDb || path.join(runtimeRoot, 'state', 'bridge.sqlite');
+  const db = openDatabase(dbPath);
   try {
     const account = resolveAccount(db, options);
     if (!account.token) {
@@ -119,12 +149,13 @@ async function main() {
       return;
     }
 
-    const config = loadBridgeConfig(pluginRoot);
-    const stateStore = createStateStore({ databasePath: options.stateDb || defaultStateDb });
+    const { loadBridgeConfig, createStateStore, BridgeService } = runtimeModules;
+    const config = loadBridgeConfig(runtimeRoot);
+    const stateStore = createStateStore({ databasePath: dbPath });
     try {
       const service = new BridgeService({
         ...config,
-        workspaceDir: pluginRoot,
+        workspaceDir: runtimeRoot,
       }, stateStore);
       const result = await service.sendFileMessage({
         accountId: account.account_id,
@@ -138,7 +169,7 @@ async function main() {
         filePath,
         kind: result.kind,
         messageId: result.messageId,
-        status: result.status || "sent",
+        status: result.status || 'sent',
         accountId: account.account_id,
         peerUserId: conversation.peer_user_id,
         conversationKey: conversation.conversation_key,

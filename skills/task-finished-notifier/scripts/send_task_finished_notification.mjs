@@ -1,17 +1,14 @@
-﻿import fs from 'node:fs';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { loadBridgeConfig } from '../../../dist/src/config/app-config.js';
-import { BridgeService } from '../../../dist/src/daemon/bridge-service.js';
-import { createStateStore } from '../../../dist/src/state/sqlite-state-store.js';
-import { AppServerClient } from '../../../dist/src/codex/app-server-client.js';
-import { WebSocketAppServerTransport } from '../../../dist/src/codex/app-server-websocket-transport.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const pluginRoot = path.resolve(__dirname, '..', '..', '..');
-const defaultStateDb = path.join(pluginRoot, 'state', 'bridge.sqlite');
+const bundleRoot = path.resolve(__dirname, '..', '..', '..');
+const installedPluginRoot = path.join(os.homedir(), '.codex', 'plugins', 'codex-wechat-bridge');
+const defaultStateDb = path.join(installedPluginRoot, 'state', 'bridge.sqlite');
 const defaultAppServerUrl = process.env.CODEX_APP_SERVER_URL?.trim() || 'ws://127.0.0.1:4500';
 const currentScriptUrl = import.meta.url;
 const invokedScriptUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
@@ -120,6 +117,40 @@ function openDatabase(filePath) {
   return new DatabaseSync(filePath, { open: true });
 }
 
+function resolveRuntimePluginRoot(options) {
+  if (options.stateDb) {
+    return path.dirname(path.dirname(path.resolve(options.stateDb)));
+  }
+  if (fs.existsSync(path.join(installedPluginRoot, 'dist', 'src', 'cli', 'status.js'))) {
+    return installedPluginRoot;
+  }
+  return bundleRoot;
+}
+
+async function loadRuntimeModules(runtimeRoot) {
+  const toUrl = (relativePath) => pathToFileURL(path.join(runtimeRoot, relativePath)).href;
+  const [
+    { loadBridgeConfig },
+    { BridgeService },
+    { createStateStore },
+    { AppServerClient },
+    { WebSocketAppServerTransport },
+  ] = await Promise.all([
+    import(toUrl('dist/src/config/app-config.js')),
+    import(toUrl('dist/src/daemon/bridge-service.js')),
+    import(toUrl('dist/src/state/sqlite-state-store.js')),
+    import(toUrl('dist/src/codex/app-server-client.js')),
+    import(toUrl('dist/src/codex/app-server-websocket-transport.js')),
+  ]);
+  return {
+    loadBridgeConfig,
+    BridgeService,
+    createStateStore,
+    AppServerClient,
+    WebSocketAppServerTransport,
+  };
+}
+
 function resolveAccount(db, options) {
   if (options.accountId) {
     const row = db.prepare('select account_id, token, base_url from accounts where account_id = ? and login_state = ?').get(options.accountId, 'active');
@@ -173,7 +204,11 @@ export function resolveSourceSessionId(options, conversation, env = process.env)
   return 'unknown';
 }
 
-async function resolveSessionName(options) {
+async function resolveSessionName(options, runtimeModules) {
+  const {
+    AppServerClient,
+    WebSocketAppServerTransport,
+  } = runtimeModules;
   if (!options.sessionId || options.sessionId === 'unknown') {
     return options.sessionName?.trim() || 'unknown';
   }
@@ -233,10 +268,13 @@ async function main() {
   const options = parsedOptions.payloadFile
     ? mergeOptionsWithPayload(parsedOptions, readPayloadFile(parsedOptions.payloadFile))
     : parsedOptions;
+  const runtimeRoot = resolveRuntimePluginRoot(options);
+  const runtimeModules = await loadRuntimeModules(runtimeRoot);
   const overview = requireText(options.overview, '--overview');
   const results = requireText(options.results, '--results');
   const nextStep = requireText(options.nextStep, '--next-step');
-  const db = openDatabase(options.stateDb || defaultStateDb);
+  const dbPath = options.stateDb || path.join(runtimeRoot, 'state', 'bridge.sqlite');
+  const db = openDatabase(dbPath);
   try {
     const account = resolveAccount(db, options);
     const conversation = resolveConversation(db, account.account_id, options);
@@ -245,7 +283,7 @@ async function main() {
     const sessionName = await resolveSessionName({
       sessionId,
       sessionName: options.sessionName,
-    });
+    }, runtimeModules);
     const text = buildMessage({ sessionId, sessionName, overview, results, nextStep });
 
     if (options.dryRun) {
@@ -253,25 +291,26 @@ async function main() {
       return;
     }
 
-    const config = loadBridgeConfig(pluginRoot);
-    const stateStore = createStateStore({ databasePath: options.stateDb || defaultStateDb });
+    const { loadBridgeConfig, createStateStore, BridgeService } = runtimeModules;
+    const config = loadBridgeConfig(runtimeRoot);
+    const stateStore = createStateStore({ databasePath: dbPath });
     try {
       const service = new BridgeService({
         ...config,
-        workspaceDir: pluginRoot,
+        workspaceDir: runtimeRoot,
       }, stateStore);
       const result = await service.sendTextMessage({
-      accountId: account.account_id,
-      peerUserId: conversation.peer_user_id,
-      contextToken,
-      text,
-    });
-    console.log(JSON.stringify({
-      ok: true,
-      messageId: result.messageId,
-      status: result.status || 'sent',
-      sessionId,
-      sessionName,
+        accountId: account.account_id,
+        peerUserId: conversation.peer_user_id,
+        contextToken,
+        text,
+      });
+      console.log(JSON.stringify({
+        ok: true,
+        messageId: result.messageId,
+        status: result.status || 'sent',
+        sessionId,
+        sessionName,
       }));
     } finally {
       stateStore.close();

@@ -145,6 +145,7 @@ export class BridgeService {
   private readonly startedAt = new Date().toISOString();
   private readonly activeTasks = new Map<string, ActiveTaskState>();
   private readonly processingPendingIds = new Set<number>();
+  private readonly processingConversationKeys = new Set<string>();
   private readonly recoveryReviewPendingAccounts = new Set<string>();
 
   public constructor(private readonly config: BridgeConfig, private readonly stateStore: StateStore) {
@@ -423,13 +424,14 @@ export class BridgeService {
     };
   }
 
-  async pollAccount(accountId: string): Promise<{ status: string; processed: number }> {
+  async pollAccount(accountId: string, abortSignal?: AbortSignal): Promise<{ status: string; processed: number }> {
     const account = this.requireAccount(accountId);
     const client = this.createAccountClient(account.accountId);
     const pollState = this.stateStore.getPollState(account.accountId);
     const response = await client.fetchUpdates({
       cursor: pollState?.cursor,
       timeoutMs: this.config.longPollTimeoutMs,
+      signal: abortSignal,
     });
 
     if (response.errcode === SESSION_EXPIRED_ERROR || response.ret === SESSION_EXPIRED_ERROR) {
@@ -650,7 +652,14 @@ export class BridgeService {
 
       for (const account of accounts) {
         try {
-          await this.pollAccount(account.accountId);
+          const pollAbortController = new AbortController();
+          await withTimeout(
+            this.pollAccount(account.accountId, pollAbortController.signal),
+            Math.max(60_000, this.config.longPollTimeoutMs + 15_000),
+            () => {
+              pollAbortController.abort();
+            },
+          );
         } catch (error) {
           if (error instanceof BridgeRestartRequestedError) {
             throw error;
@@ -721,10 +730,15 @@ export class BridgeService {
     if ((this.getPendingReviewState(pending.conversationKey)?.count ?? 0) > 0) {
       return;
     }
-    if (this.processingPendingIds.has(pending.id) || this.activeTasks.has(pending.conversationKey)) {
+    if (
+      this.processingPendingIds.has(pending.id)
+      || this.processingConversationKeys.has(pending.conversationKey)
+      || this.activeTasks.has(pending.conversationKey)
+    ) {
       return;
     }
     this.processingPendingIds.add(pending.id);
+    this.processingConversationKeys.add(pending.conversationKey);
     void this.processPendingMessage(pending)
       .catch((error) => {
         this.stateStore.recordDiagnostic({
@@ -735,6 +749,7 @@ export class BridgeService {
       })
       .finally(() => {
         this.processingPendingIds.delete(pending.id);
+        this.processingConversationKeys.delete(pending.conversationKey);
         this.activeTasks.delete(pending.conversationKey);
         this.startNextPendingMessageForConversation(pending.conversationKey);
       });
@@ -757,6 +772,7 @@ export class BridgeService {
     const client = this.createAccountClient(pending.accountId);
     const runtimePreferences = this.getRuntimePreferences();
     const deliveryIntent = this.getPendingDeliveryIntent(pending.id);
+    const effectiveContextToken = this.stateStore.getContextToken(pending.accountId, pending.peerUserId) ?? pending.contextToken;
     let currentAbortController = new AbortController();
     let typingTicket: string | undefined;
 
@@ -826,7 +842,7 @@ export class BridgeService {
       try {
         await client.sendTextMessage({
           peerUserId: pending.peerUserId,
-          contextToken: pending.contextToken ?? "",
+          contextToken: effectiveContextToken ?? "",
           text: this.formatIdleTimeoutMessage(timeoutMs),
         });
         this.stateStore.recordDeliveryAttempt({
@@ -854,7 +870,7 @@ export class BridgeService {
         threadId: pending.threadId,
         accountId: pending.accountId,
         peerUserId: pending.peerUserId,
-        contextToken: pending.contextToken ?? "",
+        contextToken: effectiveContextToken ?? "",
         prompt: pending.prompt,
         threadName: this.getPendingNewSessionName(pending.conversationKey) ?? undefined,
         typingTicket,
@@ -881,7 +897,7 @@ export class BridgeService {
     try {
       typingTicket = await client.getTypingTicket({
         peerUserId: pending.peerUserId,
-        contextToken: pending.contextToken,
+        contextToken: effectiveContextToken,
       });
       setActiveTask({
         abortController: currentAbortController,
@@ -897,7 +913,7 @@ export class BridgeService {
         try {
           typingTicket = await client.getTypingTicket({
             peerUserId: pending.peerUserId,
-            contextToken: pending.contextToken,
+            contextToken: effectiveContextToken,
           });
         } catch {
           typingTicket = undefined;
@@ -1674,6 +1690,25 @@ async function sleep(ms: number, abortSignal?: AbortSignal): Promise<void> {
     if (!(error instanceof Error) || error.message !== "aborted") {
       throw error;
     }
+  });
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout?: (() => void) | undefined): Promise<T> {
+  return await new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      onTimeout?.();
+      reject(new Error(`Operation timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
   });
 }
 

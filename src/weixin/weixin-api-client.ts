@@ -313,6 +313,7 @@ async function fetchJson<T>(input: {
   timeoutMs?: number | undefined;
   retryLimit?: number | undefined;
   retryDelayMs?: number | undefined;
+  signal?: AbortSignal | undefined;
 }): Promise<T> {
   const url = new URL(input.endpoint, input.baseUrl.endsWith("/") ? input.baseUrl : `${input.baseUrl}/`);
   const bodyText = input.body === undefined ? undefined : JSON.stringify(input.body);
@@ -323,18 +324,23 @@ async function fetchJson<T>(input: {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? 15000);
     try {
-      const response = await fetch(url, {
-        method: input.method,
-        headers: buildAuthenticatedHeaders({
-          token: input.token,
-          appId: input.appId,
-          clientVersion: input.clientVersion,
-          randomWechatUin: randomWechatUin(),
-          contentLength: bodyText ? Buffer.byteLength(bodyText, "utf8") : undefined,
+      const requestSignal = input.signal ? AbortSignal.any([controller.signal, input.signal]) : controller.signal;
+      const response = await withTimeout(
+        fetch(url, {
+          method: input.method,
+          headers: buildAuthenticatedHeaders({
+            token: input.token,
+            appId: input.appId,
+            clientVersion: input.clientVersion,
+            randomWechatUin: randomWechatUin(),
+            contentLength: bodyText ? Buffer.byteLength(bodyText, "utf8") : undefined,
+          }),
+          ...(bodyText === undefined ? {} : { body: bodyText }),
+          signal: requestSignal,
         }),
-        ...(bodyText === undefined ? {} : { body: bodyText }),
-        signal: controller.signal,
-      });
+        input.timeoutMs ?? 15000,
+        () => controller.abort(),
+      );
       const raw = await response.text();
       if (!response.ok) {
         throw new Error(`${input.method} ${url.pathname} failed: ${response.status} ${raw}`);
@@ -362,6 +368,25 @@ function isTransientFetchError(error: unknown): boolean {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout?: (() => void) | undefined): Promise<T> {
+  return await new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      onTimeout?.();
+      reject(new Error(`request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function assertBusinessSuccess(
@@ -463,7 +488,7 @@ export class HttpWeixinClient implements WeixinClient {
     };
   }
 
-  async fetchUpdates(input: { cursor?: string | undefined; timeoutMs?: number | undefined }): Promise<GetUpdatesResponse> {
+  async fetchUpdates(input: { cursor?: string | undefined; timeoutMs?: number | undefined; signal?: AbortSignal | undefined }): Promise<GetUpdatesResponse> {
     return fetchJson<GetUpdatesResponse>({
       method: "POST",
       baseUrl: this.options.baseUrl,
@@ -474,6 +499,7 @@ export class HttpWeixinClient implements WeixinClient {
       timeoutMs: input.timeoutMs ?? 35000,
       retryLimit: 1,
       retryDelayMs: 500,
+      signal: input.signal,
       body: {
         get_updates_buf: input.cursor ?? "",
         base_info: { channel_version: this.options.packageVersion },

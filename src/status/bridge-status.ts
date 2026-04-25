@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { BridgeConfig } from "../config/app-config.js";
 import type { StateStore } from "../state/sqlite-state-store.js";
 
@@ -8,6 +10,12 @@ type DaemonRuntimeState = {
   startedAt?: string | undefined;
   heartbeatAt?: string | undefined;
   activeAccounts?: number | undefined;
+};
+
+type DaemonLockRecord = {
+  pid?: number | undefined;
+  acquiredAt?: string | undefined;
+  purpose?: string | undefined;
 };
 
 export type BridgeStatusSnapshot = {
@@ -61,6 +69,7 @@ export async function collectBridgeStatus(input: {
   stateStore: Pick<StateStore, "listAccounts" | "listConversations" | "listPendingMessages" | "listDiagnostics" | "getRuntimeState">;
   appServerConnected?: boolean | undefined;
   probeAppServer?: (() => Promise<boolean>) | undefined;
+  readDaemonLock?: ((workspaceDir: string) => DaemonLockRecord | undefined) | undefined;
 }): Promise<BridgeStatusSnapshot> {
   const accounts = input.stateStore.listAccounts();
   const active = accounts.filter((account) => account.loginState === "active").length;
@@ -70,7 +79,9 @@ export async function collectBridgeStatus(input: {
   const failedMessages = input.stateStore.listPendingMessages(["failed"]);
   const diagnostics = input.stateStore.listDiagnostics(10);
   const daemonState = parseDaemonRuntimeState(input.stateStore.getRuntimeState("daemon_status"));
-  const daemonRunning = typeof daemonState?.pid === "number" && isProcessAlive(daemonState.pid);
+  const daemonLock = input.readDaemonLock?.(input.config.workspaceDir) ?? readDaemonLock(input.config.workspaceDir);
+  const liveDaemon = resolveLiveDaemon(daemonLock, daemonState);
+  const daemonRunning = typeof liveDaemon?.pid === "number" && isProcessAlive(liveDaemon.pid);
   const heartbeatAt = daemonState?.heartbeatAt ? Date.parse(daemonState.heartbeatAt) : Number.NaN;
   const staleThresholdMs = Math.max(30_000, input.config.longPollTimeoutMs * 2 + 10_000);
   const appServerConnected = input.appServerConnected ?? await input.probeAppServer?.() ?? false;
@@ -97,8 +108,8 @@ export async function collectBridgeStatus(input: {
     daemon: {
       running: daemonRunning,
       healthy: daemonRunning && Number.isFinite(heartbeatAt) && (Date.now() - heartbeatAt) <= staleThresholdMs,
-      ...(typeof daemonState?.pid === "number" ? { pid: daemonState.pid } : {}),
-      ...(daemonState?.startedAt ? { startedAt: daemonState.startedAt } : {}),
+      ...(typeof liveDaemon?.pid === "number" ? { pid: liveDaemon.pid } : {}),
+      ...(liveDaemon?.startedAt ? { startedAt: liveDaemon.startedAt } : {}),
       ...(daemonState?.heartbeatAt ? { heartbeatAt: daemonState.heartbeatAt } : {}),
       ...(typeof daemonState?.activeAccounts === "number" ? { activeAccounts: daemonState.activeAccounts } : {}),
     },
@@ -147,6 +158,45 @@ function parseDaemonRuntimeState(value: unknown): DaemonRuntimeState | undefined
     ...(typeof value.heartbeatAt === "string" ? { heartbeatAt: value.heartbeatAt } : {}),
     ...(typeof value.activeAccounts === "number" ? { activeAccounts: value.activeAccounts } : {}),
   };
+}
+
+function resolveLiveDaemon(
+  daemonLock: DaemonLockRecord | undefined,
+  daemonState: DaemonRuntimeState | undefined,
+): { pid?: number | undefined; startedAt?: string | undefined } | undefined {
+  if (typeof daemonLock?.pid === "number" && isProcessAlive(daemonLock.pid)) {
+    return {
+      pid: daemonLock.pid,
+      startedAt: daemonLock.acquiredAt ?? daemonState?.startedAt,
+    };
+  }
+  if (typeof daemonState?.pid === "number") {
+    return {
+      pid: daemonState.pid,
+      startedAt: daemonState.startedAt,
+    };
+  }
+  return undefined;
+}
+
+function readDaemonLock(workspaceDir: string): DaemonLockRecord | undefined {
+  const lockPath = path.join(workspaceDir, "state", "daemon.lock");
+  if (!fs.existsSync(lockPath)) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockPath, "utf8")) as unknown;
+    if (!isObject(parsed)) {
+      return undefined;
+    }
+    return {
+      ...(typeof parsed.pid === "number" ? { pid: parsed.pid } : {}),
+      ...(typeof parsed.acquiredAt === "string" ? { acquiredAt: parsed.acquiredAt } : {}),
+      ...(typeof parsed.purpose === "string" ? { purpose: parsed.purpose } : {}),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function parseLatestReplyTiming(diagnostics: ReturnType<Pick<StateStore, "listDiagnostics">["listDiagnostics"]>): BridgeStatusSnapshot["latestReplyTiming"] | undefined {

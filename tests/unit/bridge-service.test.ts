@@ -282,6 +282,78 @@ describe("BridgeService", () => {
     expect(abortController.signal.reason).toBeInstanceOf(CodexTurnFallbackRequestedError);
   });
 
+  test("does not start multiple pending messages concurrently for the same conversation before active task state is set", async () => {
+    const service = new BridgeService(makeConfig(), {
+      getRuntimeState: vi.fn(),
+      saveRuntimeState: vi.fn(),
+      recordDiagnostic: vi.fn(),
+      listAccounts: vi.fn(() => []),
+      listPendingMessages: vi.fn(() => []),
+      listConversations: vi.fn(() => []),
+      listDiagnostics: vi.fn(() => []),
+    } as any);
+    const started: number[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const firstPendingDone = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    (service as any).processPendingMessage = vi.fn((pending: { id: number }) => {
+      started.push(pending.id);
+      if (pending.id === 96) {
+        return firstPendingDone;
+      }
+      return Promise.resolve();
+    });
+
+    (service as any).maybeStartPendingMessage({
+      id: 96,
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      prompt: "test 1",
+      status: "pending",
+      createdAt: "2026-04-21T07:19:24.086Z",
+      updatedAt: "2026-04-21T07:19:24.086Z",
+    });
+    (service as any).maybeStartPendingMessage({
+      id: 97,
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      prompt: "test 2",
+      status: "pending",
+      createdAt: "2026-04-21T07:21:15.074Z",
+      updatedAt: "2026-04-21T07:21:15.074Z",
+    });
+
+    expect(started).toEqual([96]);
+
+    let pendingRows = [{
+      id: 97,
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      prompt: "test 2",
+      status: "pending",
+      createdAt: "2026-04-21T07:21:15.074Z",
+      updatedAt: "2026-04-21T07:21:15.074Z",
+    }];
+    (service as any).stateStore.listPendingMessages = vi.fn((statuses?: string[]) => {
+      if (!statuses?.includes("pending")) {
+        return [];
+      }
+      const rows = pendingRows;
+      pendingRows = [];
+      return rows;
+    });
+
+    releaseFirst?.();
+    await vi.waitFor(() => {
+      expect(started).toEqual([96, 97]);
+    });
+  });
+
   test("stores the latest raw inbound message shape for protocol debugging", async () => {
     const saveRuntimeState = vi.fn();
     const fetchUpdates = vi.fn(async () => ({

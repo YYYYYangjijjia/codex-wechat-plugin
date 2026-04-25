@@ -242,8 +242,12 @@ describe("wechat control commands", () => {
     });
   });
 
-  test("reports and controls pending backlog review", () => {
+  test("reports pending queued messages alongside backlog review", () => {
     const store = new FakeStore();
+    store.pending = [
+      makePending({ id: 96, prompt: "test", conversationKey: "acct-1:user-a" }),
+      makePending({ id: 97, prompt: "no response", conversationKey: "acct-1:user-a" }),
+    ];
     const summaryResult = handleWechatControlCommand({
       text: "/pending",
       stateStore: store,
@@ -271,9 +275,29 @@ describe("wechat control commands", () => {
     });
 
     expect(summaryResult.responseText).toContain("📡");
-    expect(summaryResult.responseText).toContain("pending backlog: 2");
+    expect(summaryResult.responseText).toContain("queued pending messages: 2");
+    expect(summaryResult.responseText).toContain("- queued 1. test");
+    expect(summaryResult.responseText).toContain("- queued 2. no response");
+    expect(summaryResult.responseText).toContain("pending backlog review: 2");
     expect(continueResult.action).toEqual({ type: "pending_continue" });
     expect(clearResult.action).toEqual({ type: "pending_clear" });
+  });
+
+  test("reports a running task when no queued messages or backlog review exist", () => {
+    const store = new FakeStore();
+    const result = handleWechatControlCommand({
+      text: "/pending",
+      stateStore: store,
+      conversation: makeConversation({}),
+      workspaceDir: "C:/repo/codex-wechat-plugin",
+      primaryBackend: "app_server",
+      activeTask: {
+        prompt: "long running task",
+        runnerBackend: "app_server",
+      },
+    });
+
+    expect(result.responseText).toContain("The current task is still running");
   });
 
   test("still issues stop and append actions when the active task snapshot is missing", () => {

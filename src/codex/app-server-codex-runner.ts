@@ -55,41 +55,45 @@ export class AppServerCodexRunner implements CodexRunner {
       append?: ((guidance: string) => Promise<void>) | undefined;
     }) => void) | undefined;
   }): Promise<CodexTurnResult> {
-    await this.ensureInitialized();
-
-    const answerChunker = new ProgressChunker();
-    const reasoningChunker = new ProgressChunker();
-    let progressChain = Promise.resolve();
-    let reasoningChain = Promise.resolve();
-    let latestReasoningText = "";
-    const reusableThreadId = !input.threadId && input.threadName
-      ? await this.findReusableThreadId(input.threadName)
-      : undefined;
-    const thread = input.threadId
-      ? await this.options.client.resumeThread({ threadId: input.threadId })
-      : reusableThreadId
-        ? await this.options.client.resumeThread({ threadId: reusableThreadId })
-        : await this.options.client.startThread({ cwd: input.cwd });
-    if (!input.threadId && !reusableThreadId && input.threadName) {
-      await this.options.client.setThreadName({
-        threadId: thread.id,
-        name: input.threadName,
-      });
-    }
-
     try {
+      await this.ensureInitialized();
+
+      const answerChunker = new ProgressChunker();
+      const reasoningChunker = new ProgressChunker();
+      let progressChain = Promise.resolve();
+      let reasoningChain = Promise.resolve();
+      let latestReasoningText = "";
       let activeTurnId: string | undefined;
+      let resolvedThreadId: string | undefined;
       const idleTimeout = createIdleTimeoutNotice({
         timeoutMs: this.options.turnTimeoutMs ?? 60_000,
         onIdle: async () => {
           await input.onIdleTimeout?.({
             runnerBackend: "app_server",
-            threadId: thread.id,
+            threadId: resolvedThreadId,
             turnId: activeTurnId,
             timeoutMs: this.options.turnTimeoutMs ?? 60_000,
           });
         },
       });
+      idleTimeout.touch();
+      const reusableThreadId = !input.threadId && input.threadName
+        ? await this.findReusableThreadId(input.threadName)
+        : undefined;
+      const thread = input.threadId
+        ? await this.options.client.resumeThread({ threadId: input.threadId })
+        : reusableThreadId
+          ? await this.options.client.resumeThread({ threadId: reusableThreadId })
+          : await this.options.client.startThread({ cwd: input.cwd });
+      resolvedThreadId = thread.id;
+      idleTimeout.touch();
+      if (!input.threadId && !reusableThreadId && input.threadName) {
+        await this.options.client.setThreadName({
+          threadId: thread.id,
+          name: input.threadName,
+        });
+        idleTimeout.touch();
+      }
       const turnPromise = this.options.client.startTurn({
         threadId: thread.id,
         cwd: input.cwd,
@@ -105,10 +109,10 @@ export class AppServerCodexRunner implements CodexRunner {
             turnId,
             supportsAppend: true,
             interrupt: async () => {
-              await this.options.client.interruptTurn({ threadId: thread.id, turnId });
+              await this.runWithRecoveredInitialization(() => this.options.client.interruptTurn({ threadId: thread.id, turnId }));
             },
             append: async (guidance: string) => {
-              await this.options.client.steerTurn({ threadId: thread.id, turnId, prompt: guidance });
+              await this.runWithRecoveredInitialization(() => this.options.client.steerTurn({ threadId: thread.id, turnId, prompt: guidance }));
             },
           });
         },
@@ -185,7 +189,7 @@ export class AppServerCodexRunner implements CodexRunner {
     try {
       return await operation();
     } catch (error) {
-      if (!isNotInitializedError(error)) {
+      if (!isRecoverableClientStateError(error)) {
         throw error;
       }
       this.resetClient();
@@ -200,11 +204,11 @@ export class AppServerCodexRunner implements CodexRunner {
   }
 }
 
-function isNotInitializedError(error: unknown): boolean {
+function isRecoverableClientStateError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
   }
-  return /not initialized/i.test(error.message);
+  return /not initialized/i.test(error.message) || /client closed/i.test(error.message);
 }
 
 class ProgressChunker {

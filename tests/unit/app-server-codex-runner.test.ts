@@ -272,6 +272,45 @@ describe("AppServerCodexRunner", () => {
     expect(client.interruptTurnCalls).toEqual([{ threadId: "thread-new", turnId: "turn-1" }]);
   });
 
+  test("reinitializes and retries turn interrupts once when app-server reports the client is closed", async () => {
+    const processManager = new FakeProcessManager();
+    const client = new FakeAppServerClient();
+    let firstInterrupt = true;
+    client.interruptTurn = async (input: { threadId: string; turnId: string }) => {
+      if (firstInterrupt) {
+        firstInterrupt = false;
+        throw new Error("Codex app-server client closed.");
+      }
+      client.interruptTurnCalls.push(input);
+    };
+    const runner = new AppServerCodexRunner({
+      processManager,
+      client,
+      turnTimeoutMs: 30_000,
+    });
+    let control: {
+      runnerBackend: "app_server";
+      threadId?: string | undefined;
+      turnId?: string | undefined;
+      supportsAppend: boolean;
+      interrupt: () => Promise<void>;
+    } | undefined;
+
+    await runner.runTurn({
+      cwd: TEST_CWD,
+      prompt: "hello",
+      onTurnStarted: (value) => {
+        control = value as typeof control;
+      },
+    });
+
+    await control?.interrupt();
+
+    expect(client.initializeCalls).toBe(2);
+    expect(client.closeCalls).toBe(1);
+    expect(client.interruptTurnCalls).toEqual([{ threadId: "thread-new", turnId: "turn-1" }]);
+  });
+
   test("does not split progress chunks inside urls or file paths", async () => {
     const processManager = new FakeProcessManager();
     const client = new FakeAppServerClient();
@@ -468,6 +507,38 @@ describe("AppServerCodexRunner", () => {
     expect(result.finalMessage).toBe("finished.");
     expect(notices).toEqual([{ threadId: "thread-existing", turnId: "turn-1", timeoutMs: 20 }]);
     expect(client.closeCalls).toBe(0);
+  });
+
+  test("starts the idle-timeout window before app-server emits onStarted", async () => {
+    const processManager = new FakeProcessManager();
+    const client = new FakeAppServerClient();
+    client.startTurnImplementation = async () => await new Promise(() => undefined);
+    const runner = new AppServerCodexRunner({
+      processManager,
+      client,
+      turnTimeoutMs: 20,
+    });
+    const notices: Array<{ threadId?: string; turnId?: string; timeoutMs: number }> = [];
+    const abortController = new AbortController();
+
+    const runPromise = runner.runTurn({
+      cwd: TEST_CWD,
+      prompt: "hello",
+      onIdleTimeout: async (input) => {
+        notices.push({
+          timeoutMs: input.timeoutMs,
+          ...(input.threadId ? { threadId: input.threadId } : {}),
+          ...(input.turnId ? { turnId: input.turnId } : {}),
+        });
+      },
+      signal: abortController.signal,
+    });
+
+    await sleep(35);
+    abortController.abort("Interrupted from startup-stall test.");
+
+    await expect(runPromise).rejects.toThrow("Interrupted from startup-stall test.");
+    expect(notices).toEqual([{ threadId: "thread-new", timeoutMs: 20 }]);
   });
 
   test("does not time out while the turn keeps emitting updates within the idle timeout window", async () => {

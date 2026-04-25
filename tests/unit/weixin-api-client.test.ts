@@ -234,6 +234,24 @@ describe("Weixin API request builders", () => {
     globalThis.fetch = originalFetch;
   });
 
+  test("times out fetchUpdates even when the underlying fetch never settles", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    const client = new HttpWeixinClient({
+      baseUrl: "https://example.test/",
+      token: "token",
+      appId: "app-id",
+      clientVersion: 65547,
+      packageVersion: "0.1.0",
+    });
+
+    await expect(client.fetchUpdates({ timeoutMs: 5 })).rejects.toThrow(/request timed out after 5ms/i);
+
+    globalThis.fetch = originalFetch;
+  });
+
   test("requests upload parameters for outbound media", async () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = vi.fn(async () =>

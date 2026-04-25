@@ -102,6 +102,7 @@ export function handleWechatControlCommand(input: {
   currentSession?: AppServerThreadSummary | undefined;
   availableModels?: AppServerModelSummary[];
   pendingReview?: PendingReviewSummary | undefined;
+  pendingMessages?: PendingMessageRecord[] | undefined;
 }): { handled: boolean; responseText?: string | undefined; action?: CommandAction | undefined } {
   const parsed = parseWechatControlCommand(input.text);
   if (!parsed) {
@@ -468,10 +469,18 @@ export function handleWechatControlCommand(input: {
       };
     case "pending": {
       const subcommand = parsed.args[0]?.toLowerCase();
+      const pendingMessages = input.pendingMessages
+        ?? input.stateStore
+          .listPendingMessages(["pending"])
+          .filter((row) => row.conversationKey === input.conversation.conversationKey);
       if (!subcommand) {
         return {
           handled: true,
-          responseText: formatSystemReply("status", formatPendingReview(input.pendingReview)),
+          responseText: formatSystemReply("status", formatPendingState({
+            pendingMessages,
+            ...(input.pendingReview ? { pendingReview: input.pendingReview } : {}),
+            ...(input.activeTask ? { activeTask: input.activeTask } : {}),
+          })),
         };
       }
       if (subcommand === "continue") {
@@ -977,16 +986,37 @@ function formatQuota(value: unknown): string {
   return lines.join("\n");
 }
 
-function formatPendingReview(value?: PendingReviewSummary): string {
-  if (!value || value.count === 0) {
-    return "No pending backlog review is waiting for this chat.";
+function formatPendingState(input: {
+  pendingReview?: PendingReviewSummary;
+  pendingMessages?: PendingMessageRecord[];
+  activeTask?: ActiveTaskSummary;
+}): string {
+  const pendingMessages = input.pendingMessages ?? [];
+  const backlogCount = input.pendingReview?.count ?? 0;
+  if (backlogCount === 0 && pendingMessages.length === 0) {
+    return input.activeTask
+      ? "No pending queued messages are waiting for this chat. The current task is still running."
+      : "No pending queued messages or backlog review are waiting for this chat.";
   }
-  return [
-    `pending backlog: ${value.count} message(s)`,
-    ...value.items.map((item, index) => `- ${index + 1}. ${item}`),
-    "",
-    "Use /pending continue to process them or /pending clear to discard them.",
-  ].join("\n");
+  const lines = [
+    `queued pending messages: ${pendingMessages.length}`,
+  ];
+  if (pendingMessages.length > 0) {
+    lines.push(
+      ...pendingMessages
+        .slice()
+        .sort((left, right) => left.id - right.id)
+        .slice(0, 5)
+        .map((row, index) => `- queued ${index + 1}. ${shorten(row.prompt, 80)}`),
+    );
+  }
+  lines.push(`pending backlog review: ${backlogCount}`);
+  if (backlogCount > 0 && input.pendingReview) {
+    lines.push(...input.pendingReview.items.map((item, index) => `- backlog ${index + 1}. ${item}`));
+  }
+  lines.push("");
+  lines.push("Use /pending continue to release queued/backlog work, or /pending clear to discard pending queued/backlog work for this chat.");
+  return lines.join("\n");
 }
 
 function formatSessionRecords(records: SessionRecordEntry[]): string {

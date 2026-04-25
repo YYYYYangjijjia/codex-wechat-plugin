@@ -99,5 +99,51 @@ describe("bridge status", () => {
     expect(formatBridgeStatus(snapshot)).toContain("daemon: stopped / stale (pid 1234)");
     expect(formatBridgeStatus(snapshot)).toContain("app-server: connected");
   });
+
+  test("prefers the live daemon lock over stale runtime daemon status", async () => {
+    const snapshot = await collectBridgeStatus({
+      config: makeConfig(),
+      appServerConnected: true,
+      readDaemonLock() {
+        return {
+          pid: process.pid,
+          acquiredAt: "2026-04-25T07:08:40.271Z",
+        };
+      },
+      stateStore: {
+        listAccounts() {
+          return [];
+        },
+        listConversations() {
+          return [];
+        },
+        listPendingMessages() {
+          return [];
+        },
+        listDiagnostics() {
+          return [];
+        },
+        getRuntimeState(key: string) {
+          if (key === "daemon_status") {
+            return {
+              pid: 58928,
+              heartbeatAt: new Date().toISOString(),
+              startedAt: "2026-04-21T09:08:08.884Z",
+              activeAccounts: 1,
+            };
+          }
+          return undefined;
+        },
+      },
+    });
+
+    expect(snapshot.daemon).toEqual(expect.objectContaining({
+      running: true,
+      healthy: true,
+      pid: process.pid,
+      startedAt: "2026-04-25T07:08:40.271Z",
+      activeAccounts: 1,
+    }));
+  });
 });
 

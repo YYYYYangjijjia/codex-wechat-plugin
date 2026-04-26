@@ -17,6 +17,7 @@ coverage/
 *.sqlite-wal
 /reference-cache/
 /artifacts/
+/output/
 /_reference/
 /docs/superpowers/
 /TODO.md

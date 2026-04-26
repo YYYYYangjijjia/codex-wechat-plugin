@@ -149,10 +149,10 @@ describe("wechat control commands", () => {
       expect(result.responseText).toContain("\n- /use-record");
       expect(result.responseText).toContain("\n- /yes");
       expect(result.responseText).toContain("\n- /no");
-      expect(result.responseText).toContain("\n- /quota");
+    expect(result.responseText).toContain("\n- /quota");
     expect(result.responseText).toContain("\n- /skills");
     expect(result.responseText).toContain("\n- /stop");
-    expect(result.responseText).toContain("\n- /fallback continue");
+    expect(result.responseText).not.toContain("\n- /fallback continue");
     expect(result.responseText).toContain("\n- /append");
     expect(result.responseText).toContain("\n- /model");
     expect(result.responseText).toContain("\n- /effort");
@@ -938,7 +938,7 @@ describe("wechat control commands", () => {
 
     expect(result.responseText).toContain("workspace: D:/live-workspace");
     expect(result.responseText).toContain("accounts: 2 total / 1 active");
-    expect(result.responseText).toContain("pending messages: 1");
+    expect(result.responseText).toContain("pending messages: 1 active pending / 1 historical failed");
     expect(result.responseText).toContain("current backend: app_server");
     expect(result.responseText).toContain("last reply_timing");
   });

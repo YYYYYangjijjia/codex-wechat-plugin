@@ -109,11 +109,12 @@ describe("BridgeService media delivery", () => {
       accountId: "acct-1",
       peerUserId: "user-a@im.wechat",
       filePath: "D:\\tmp\\report.pdf",
-    })).resolves.toEqual({
+    })).resolves.toEqual(expect.objectContaining({
       messageId: "queued:23",
       kind: "file",
       status: "queued",
-    });
+      queuedReason: expect.stringContaining("fresh inbound WeChat message"),
+    }));
 
     expect(enqueueOutboundDelivery).toHaveBeenCalledWith(expect.objectContaining({
       conversationKey: "acct-1:user-a@im.wechat",

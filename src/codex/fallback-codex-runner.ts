@@ -59,6 +59,7 @@ export async function runTurnWithFallback(input: {
       && input.fallbackBackend === "exec"
       && input.conversationThread?.runnerBackend === "app_server"
       && input.conversationThread.runnerThreadId
+      && !isRecoverableAppServerFinalMessageFailure(normalizedError)
     ) {
       throw normalizedError;
     }
@@ -91,8 +92,12 @@ function buildFallbackNotice(input: { from: RunnerBackend; to: RunnerBackend; er
   return [
     `⚠️ Codex backend switched from ${input.from} to ${input.to}.`,
     `原因: ${input.error.message}`,
-    "本轮回复可能失去当前 session 的实时控制能力。",
+    "已自动改用 exec 进行一次兜底重试；本轮回复可能失去当前 session 的实时控制能力。",
   ].join("\n");
+}
+
+function isRecoverableAppServerFinalMessageFailure(error: Error): boolean {
+  return /did not include a final agent message/i.test(error.message);
 }
 
 function selectThreadId(

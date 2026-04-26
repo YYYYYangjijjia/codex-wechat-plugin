@@ -1,13 +1,15 @@
 import path from "node:path";
 
 import { loadBridgeConfig } from "../config/app-config.js";
+import { resolveRuntimeRoot } from "../config/runtime-root.js";
 import { BridgeService } from "../daemon/bridge-service.js";
 import { runBridgeDaemonRuntime } from "../daemon/daemon-runtime.js";
 import { acquireProcessLock, ProcessLockAlreadyHeldError } from "../runtime/process-lock.js";
 import { createStateStore } from "../state/sqlite-state-store.js";
 
 async function main(): Promise<void> {
-  const config = loadBridgeConfig();
+  const runtimeRoot = resolveRuntimeRoot({ moduleUrl: import.meta.url });
+  const config = loadBridgeConfig(runtimeRoot);
   const lock = await acquireProcessLock({
     lockPath: path.join(config.stateDir, "daemon.lock"),
     purpose: "wechat-bridge-daemon",

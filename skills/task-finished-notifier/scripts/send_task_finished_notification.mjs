@@ -155,15 +155,30 @@ function resolveAccount(db, options) {
   if (options.accountId) {
     const row = db.prepare('select account_id, token, base_url from accounts where account_id = ? and login_state = ?').get(options.accountId, 'active');
     if (!row) {
-      throw new Error(`Active account not found: ${options.accountId}`);
+      throw new Error(buildAccountLookupError(`Active account not found: ${options.accountId}`, options));
     }
     return row;
   }
   const row = db.prepare('select account_id, token, base_url from accounts where login_state = ? order by rowid desc limit 1').get('active');
   if (!row) {
-    throw new Error('No active bridge account found.');
+    throw new Error(buildAccountLookupError('No active bridge account found.', options));
   }
   return row;
+}
+
+function buildAccountLookupError(message, options) {
+  const stateDb = path.resolve(options.stateDb || defaultStateDb);
+  const globalStateDb = path.resolve(defaultStateDb);
+  const isGlobalStateDb = stateDb.toLowerCase() === globalStateDb.toLowerCase();
+  return [
+    message,
+    `state_db: ${stateDb}`,
+    `global_runtime_state_db: ${globalStateDb}`,
+    `reading_global_runtime: ${isGlobalStateDb ? 'yes' : 'no'}`,
+    isGlobalStateDb
+      ? 'The global runtime database has no active account record. Start the WeChat login flow first.'
+      : 'This command is not reading the global WeChat Bridge runtime database. Pass --state-db for the installed runtime or run from the installed plugin root.',
+  ].join('\n');
 }
 
 function resolveConversation(db, accountId, options) {
@@ -275,48 +290,54 @@ async function main() {
   const nextStep = requireText(options.nextStep, '--next-step');
   const dbPath = options.stateDb || path.join(runtimeRoot, 'state', 'bridge.sqlite');
   const db = openDatabase(dbPath);
+  let account;
+  let conversation;
+  let contextToken;
+  let sessionId;
+  let sessionName;
+  let text;
   try {
-    const account = resolveAccount(db, options);
-    const conversation = resolveConversation(db, account.account_id, options);
-    const contextToken = resolveContextToken(db, account.account_id, conversation.peer_user_id);
-    const sessionId = resolveSourceSessionId(options, conversation);
-    const sessionName = await resolveSessionName({
+    account = resolveAccount(db, options);
+    conversation = resolveConversation(db, account.account_id, options);
+    contextToken = resolveContextToken(db, account.account_id, conversation.peer_user_id);
+    sessionId = resolveSourceSessionId(options, conversation);
+    sessionName = await resolveSessionName({
       sessionId,
       sessionName: options.sessionName,
     }, runtimeModules);
-    const text = buildMessage({ sessionId, sessionName, overview, results, nextStep });
+    text = buildMessage({ sessionId, sessionName, overview, results, nextStep });
 
     if (options.dryRun) {
       console.log(text);
       return;
     }
-
-    const { loadBridgeConfig, createStateStore, BridgeService } = runtimeModules;
-    const config = loadBridgeConfig(runtimeRoot);
-    const stateStore = createStateStore({ databasePath: dbPath });
-    try {
-      const service = new BridgeService({
-        ...config,
-        workspaceDir: runtimeRoot,
-      }, stateStore);
-      const result = await service.sendTextMessage({
-        accountId: account.account_id,
-        peerUserId: conversation.peer_user_id,
-        contextToken,
-        text,
-      });
-      console.log(JSON.stringify({
-        ok: true,
-        messageId: result.messageId,
-        status: result.status || 'sent',
-        sessionId,
-        sessionName,
-      }));
-    } finally {
-      stateStore.close();
-    }
   } finally {
     db.close();
+  }
+
+  const { loadBridgeConfig, createStateStore, BridgeService } = runtimeModules;
+  const config = loadBridgeConfig(runtimeRoot);
+  const stateStore = createStateStore({ databasePath: dbPath });
+  try {
+    const service = new BridgeService({
+      ...config,
+      workspaceDir: runtimeRoot,
+    }, stateStore);
+    const result = await service.sendTextMessage({
+      accountId: account.account_id,
+      peerUserId: conversation.peer_user_id,
+      contextToken,
+      text,
+    });
+    console.log(JSON.stringify({
+      ok: true,
+      messageId: result.messageId,
+      status: result.status || 'sent',
+      sessionId,
+      sessionName,
+    }));
+  } finally {
+    stateStore.close();
   }
 }
 

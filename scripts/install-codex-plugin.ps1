@@ -6,6 +6,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$bundleConfigPath = Join-Path $repoRoot "scripts\plugin-bundle.json"
+$bundleConfig = Get-Content -Raw $bundleConfigPath | ConvertFrom-Json
 $pluginRoot = Join-Path $HOME ".codex\plugins"
 $pluginTarget = Join-Path $pluginRoot $PluginName
 $pluginCacheRoot = Join-Path $pluginRoot "cache\local-personal-plugins"
@@ -15,13 +17,82 @@ $tmpPluginTarget = Join-Path $tmpPluginRoot $PluginName
 $marketplaceDir = Join-Path $HOME ".agents\plugins"
 $marketplacePath = Join-Path $marketplaceDir "marketplace.json"
 $marketplaceSourcePath = "./.codex/plugins/$PluginName"
-$copyDirectories = @(".codex-plugin", "assets", "skills", "dist")
-$copyFiles = @(".mcp.json", "package.json", "scripts\\wechat-bridge-tray.ps1")
-$cacheCopyDirectories = @(".codex-plugin", "assets", "skills", "dist", "node_modules", "scripts")
-$cacheCopyFiles = @(".mcp.json", "package.json")
+$copyDirectories = @($bundleConfig.copyDirectories)
+$copyFiles = @($bundleConfig.copyFiles)
+$cacheCopyDirectories = @($bundleConfig.cacheCopyDirectories)
+$cacheCopyFiles = @($bundleConfig.cacheCopyFiles)
+$excludedPayloadFiles = @($bundleConfig.excludeFiles)
+$staleInstallDirectories = @($bundleConfig.staleInstallDirectories)
+$staleCacheDirectories = @($bundleConfig.staleCacheDirectories)
 
 function Ensure-Directory([string]$Path) {
   New-Item -ItemType Directory -Force -Path $Path | Out-Null
+}
+
+function Join-RelativePath {
+  param(
+    [string]$Root,
+    [string]$RelativePath
+  )
+
+  $current = $Root
+  foreach ($part in ($RelativePath -split "[/\\]")) {
+    if (-not $part) {
+      continue
+    }
+    $current = Join-Path $current $part
+  }
+  return $current
+}
+
+function Assert-UnderRoot {
+  param(
+    [string]$Root,
+    [string]$Target
+  )
+
+  $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+  $targetFull = [System.IO.Path]::GetFullPath($Target)
+  $rootPrefix = $rootFull + [System.IO.Path]::DirectorySeparatorChar
+  if (-not $targetFull.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to remove path outside bundle root: $targetFull"
+  }
+}
+
+function Remove-PayloadFiles {
+  param(
+    [string]$TargetRoot,
+    [string[]]$RelativeFiles
+  )
+
+  foreach ($file in $RelativeFiles) {
+    if (-not $file) {
+      continue
+    }
+    $targetFile = Join-RelativePath -Root $TargetRoot -RelativePath $file
+    Assert-UnderRoot -Root $TargetRoot -Target $targetFile
+    if (Test-Path $targetFile) {
+      Remove-Item -LiteralPath $targetFile -Force
+    }
+  }
+}
+
+function Remove-PayloadDirectories {
+  param(
+    [string]$TargetRoot,
+    [string[]]$RelativeDirectories
+  )
+
+  foreach ($directory in $RelativeDirectories) {
+    if (-not $directory) {
+      continue
+    }
+    $targetDir = Join-RelativePath -Root $TargetRoot -RelativePath $directory
+    Assert-UnderRoot -Root $TargetRoot -Target $targetDir
+    if (Test-Path $targetDir) {
+      Remove-Item -LiteralPath $targetDir -Recurse -Force
+    }
+  }
 }
 
 function New-MarketplaceObject {
@@ -43,12 +114,12 @@ function Copy-PluginPayload {
   )
 
   foreach ($directory in $Directories) {
-    $sourceDir = Join-Path $SourceRoot $directory
+    $sourceDir = Join-RelativePath -Root $SourceRoot -RelativePath $directory
     if (-not (Test-Path $sourceDir)) {
       continue
     }
 
-    $targetDir = Join-Path $TargetRoot $directory
+    $targetDir = Join-RelativePath -Root $TargetRoot -RelativePath $directory
     if (Test-Path $targetDir) {
       cmd /c rmdir /s /q "$targetDir" | Out-Null
     }
@@ -60,9 +131,9 @@ function Copy-PluginPayload {
   }
 
   foreach ($file in $Files) {
-    $sourceFile = Join-Path $SourceRoot $file
+    $sourceFile = Join-RelativePath -Root $SourceRoot -RelativePath $file
     if (Test-Path $sourceFile) {
-      $targetFile = Join-Path $TargetRoot $file
+      $targetFile = Join-RelativePath -Root $TargetRoot -RelativePath $file
       Ensure-Directory (Split-Path -Parent $targetFile)
       Copy-Item -LiteralPath $sourceFile -Destination $targetFile -Force
     }
@@ -76,12 +147,12 @@ function Copy-CachePayload {
   )
 
   foreach ($directory in $cacheCopyDirectories) {
-    $sourceDir = Join-Path $SourceRoot $directory
+    $sourceDir = Join-RelativePath -Root $SourceRoot -RelativePath $directory
     if (-not (Test-Path $sourceDir)) {
       continue
     }
 
-    $targetDir = Join-Path $TargetRoot $directory
+    $targetDir = Join-RelativePath -Root $TargetRoot -RelativePath $directory
     if (Test-Path $targetDir) {
       Remove-Item -LiteralPath $targetDir -Recurse -Force
     }
@@ -91,12 +162,12 @@ function Copy-CachePayload {
   }
 
   foreach ($file in $cacheCopyFiles) {
-    $sourceFile = Join-Path $SourceRoot $file
+    $sourceFile = Join-RelativePath -Root $SourceRoot -RelativePath $file
     if (-not (Test-Path $sourceFile)) {
       continue
     }
 
-    $targetFile = Join-Path $TargetRoot $file
+    $targetFile = Join-RelativePath -Root $TargetRoot -RelativePath $file
     Ensure-Directory (Split-Path -Parent $targetFile)
     Copy-Item -LiteralPath $sourceFile -Destination $targetFile -Force
   }
@@ -121,6 +192,8 @@ if ((Test-Path $pluginTarget) -and -not $Force) {
 
 Ensure-Directory $pluginTarget
 Copy-PluginPayload -SourceRoot $repoRoot -TargetRoot $pluginTarget
+Remove-PayloadFiles -TargetRoot $pluginTarget -RelativeFiles $excludedPayloadFiles
+Remove-PayloadDirectories -TargetRoot $pluginTarget -RelativeDirectories $staleInstallDirectories
 
 Push-Location $pluginTarget
 try {
@@ -142,6 +215,8 @@ $pluginCacheVersionTarget = Join-Path $pluginCacheTarget $pluginVersion
 
 Ensure-Directory $pluginCacheVersionTarget
 Copy-CachePayload -SourceRoot $pluginTarget -TargetRoot $pluginCacheVersionTarget
+Remove-PayloadFiles -TargetRoot $pluginCacheVersionTarget -RelativeFiles $excludedPayloadFiles
+Remove-PayloadDirectories -TargetRoot $pluginCacheVersionTarget -RelativeDirectories $staleCacheDirectories
 
 if (Test-Path $pluginCacheTarget) {
   Get-ChildItem $pluginCacheTarget -Directory | Where-Object { $_.Name -ne $pluginVersion } | ForEach-Object {

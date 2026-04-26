@@ -471,6 +471,37 @@ describe("AppServerCodexRunner", () => {
     expect(client.closeCalls).toBeGreaterThanOrEqual(1);
   });
 
+  test("does not wait forever when interrupt cleanup hangs during abort", async () => {
+    const processManager = new FakeProcessManager();
+    const client = new FakeAppServerClient();
+    client.startTurnImplementation = async (input) => {
+      input.onStarted?.("turn-1");
+      return await new Promise(() => undefined);
+    };
+    client.interruptTurn = async (input: { threadId: string; turnId: string }) => {
+      client.interruptTurnCalls.push(input);
+      return await new Promise(() => undefined);
+    };
+    const runner = new AppServerCodexRunner({
+      processManager,
+      client,
+      turnTimeoutMs: 30_000,
+      interruptTimeoutMs: 20,
+    });
+    const abortController = new AbortController();
+    const runPromise = runner.runTurn({
+      cwd: TEST_CWD,
+      prompt: "hello",
+      signal: abortController.signal,
+    });
+
+    abortController.abort("Interrupted while cleanup hangs.");
+
+    await expect(runPromise).rejects.toThrow("Interrupted while cleanup hangs.");
+    expect(client.interruptTurnCalls).toEqual([{ threadId: "thread-new", turnId: "turn-1" }]);
+    expect(client.closeCalls).toBeGreaterThanOrEqual(1);
+  });
+
   test("emits a single idle-timeout notice and keeps waiting for the turn result", async () => {
     const processManager = new FakeProcessManager();
     const client = new FakeAppServerClient();

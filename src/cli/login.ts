@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { loadBridgeConfig } from "../config/app-config.js";
+import { resolveRuntimeRoot } from "../config/runtime-root.js";
 import { BridgeService } from "../daemon/bridge-service.js";
 import { createStateStore } from "../state/sqlite-state-store.js";
 
@@ -10,7 +11,8 @@ async function main(): Promise<void> {
   const shouldOpen = !process.argv.includes("--no-open");
   const pollIntervalMs = 2_000;
 
-  const config = loadBridgeConfig();
+  const runtimeRoot = resolveRuntimeRoot({ moduleUrl: import.meta.url });
+  const config = loadBridgeConfig(runtimeRoot);
   const stateStore = createStateStore({ databasePath: config.databasePath });
   const service = new BridgeService(config, stateStore);
 

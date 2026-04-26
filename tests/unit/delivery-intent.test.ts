@@ -10,7 +10,7 @@ describe("parseDeliveryIntent", () => {
       evidenceText: [],
     });
 
-    expect(parseDeliveryIntent("请帮我生成一个 PDF 报告")).toEqual({
+    expect(parseDeliveryIntent("\u8bf7\u5e2e\u6211\u751f\u6210\u4e00\u4e2a PDF \u62a5\u544a")).toEqual({
       enabled: false,
       requestedKinds: [],
       evidenceText: [],
@@ -24,26 +24,40 @@ describe("parseDeliveryIntent", () => {
       evidenceText: expect.arrayContaining(["PDF", "send it back"]),
     });
 
-    expect(parseDeliveryIntent("请进行整理，然后把生成的 PDF 文件发给我")).toMatchObject({
+    expect(parseDeliveryIntent("\u8bf7\u8fdb\u884c\u6574\u7406\uff0c\u7136\u540e\u628a\u751f\u6210\u7684 PDF \u6587\u4ef6\u53d1\u7ed9\u6211")).toMatchObject({
       enabled: true,
       requestedKinds: ["pdf"],
-      evidenceText: expect.arrayContaining(["PDF", "发给我"]),
+      evidenceText: expect.arrayContaining(["PDF", "\u53d1\u7ed9\u6211"]),
+    });
+  });
+
+  test("enables delivery for real Chinese WeChat send-file wording", () => {
+    expect(parseDeliveryIntent("\u7ed9\u6211\u53d1\u9001\u4e00\u4e2a\u6d4b\u8bd5\u6587\u4ef6pdf")).toMatchObject({
+      enabled: true,
+      requestedKinds: ["pdf"],
+      evidenceText: expect.arrayContaining(["PDF", "\u53d1\u9001"]),
+    });
+
+    expect(parseDeliveryIntent("\u628a\u751f\u6210\u7684 PDF \u6587\u4ef6\u53d1\u7ed9\u6211")).toMatchObject({
+      enabled: true,
+      requestedKinds: ["pdf"],
+      evidenceText: expect.arrayContaining(["PDF", "\u53d1\u7ed9\u6211"]),
     });
   });
 
   test("maps broad file requests conservatively", () => {
-    expect(parseDeliveryIntent("请完成任务后把最终文件发送到微信")).toMatchObject({
+    expect(parseDeliveryIntent("\u8bf7\u5b8c\u6210\u4efb\u52a1\u540e\u628a\u6700\u7ec8\u6587\u4ef6\u53d1\u9001\u5230\u5fae\u4fe1")).toMatchObject({
       enabled: true,
       requestedKinds: ["file"],
-      evidenceText: expect.arrayContaining(["文件", "发送到微信"]),
+      evidenceText: expect.arrayContaining(["\u6587\u4ef6", "\u53d1\u9001"]),
     });
   });
 
   test("keeps multiple requested kinds in stable order without duplicates", () => {
-    expect(parseDeliveryIntent("请生成 PDF 和 zip，然后把 zip 和 PDF 都发给我")).toMatchObject({
+    expect(parseDeliveryIntent("\u8bf7\u751f\u6210 PDF \u548c zip\uff0c\u7136\u540e\u628a zip \u548c PDF \u90fd\u53d1\u7ed9\u6211")).toMatchObject({
       enabled: true,
       requestedKinds: ["pdf", "zip"],
-      evidenceText: expect.arrayContaining(["PDF", "zip", "发给我"]),
+      evidenceText: expect.arrayContaining(["PDF", "zip", "\u53d1\u7ed9\u6211"]),
     });
   });
 });

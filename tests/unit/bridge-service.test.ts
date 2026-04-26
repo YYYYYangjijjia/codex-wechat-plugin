@@ -3,7 +3,7 @@
 import { BridgeService } from "../../src/daemon/bridge-service.js";
 import { BridgeRestartRequestedError } from "../../src/daemon/bridge-restart-requested-error.js";
 import type { BridgeConfig } from "../../src/config/app-config.js";
-import { CodexTurnFallbackRequestedError } from "../../src/codex/codex-runner.js";
+import { CodexTurnFallbackRequestedError, CodexTurnInterruptedError } from "../../src/codex/codex-runner.js";
 import { MessageItemType } from "../../src/weixin/weixin-api-client.js";
 
 function makeConfig(): BridgeConfig {
@@ -97,10 +97,11 @@ describe("BridgeService", () => {
       accountId: "acct-1",
       peerUserId: "user-a@im.wechat",
       text: "manual probe",
-    })).resolves.toEqual({
+    })).resolves.toEqual(expect.objectContaining({
       messageId: "queued:17",
       status: "queued",
-    });
+      queuedReason: expect.stringContaining("fresh inbound WeChat message"),
+    }));
 
     expect(recordDeliveryAttempt).toHaveBeenCalledWith(expect.objectContaining({
       conversationKey: "acct-1:user-a@im.wechat",
@@ -123,6 +124,130 @@ describe("BridgeService", () => {
       code: "manual_send_queued",
       accountId: "acct-1",
       detail: expect.stringContaining("context is no longer valid"),
+    }));
+  });
+
+  test("degrades quota reads when Codex returns an unknown plan variant", async () => {
+    const recordDiagnostic = vi.fn();
+    const service = new BridgeService(makeConfig(), {
+      getRuntimeState: vi.fn(() => undefined),
+      saveRuntimeState: vi.fn(),
+      recordDiagnostic,
+      listAccounts: vi.fn(() => []),
+      listPendingMessages: vi.fn(() => []),
+      listConversations: vi.fn(() => []),
+      listDiagnostics: vi.fn(() => []),
+    } as any);
+    (service as any).appServerCodexRunner = {
+      readRateLimits: vi.fn(async () => {
+        throw new Error("unknown plan_type variant: prolite");
+      }),
+    };
+
+    const result = await (service as any).readQuotaForChat("acct-1");
+
+    expect(result).toContain("Unable to read the current Codex quota because Codex returned an unsupported quota response");
+    expect(result).toContain("This does not affect WeChat message delivery");
+    expect(result).toContain("prolite");
+    expect(recordDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
+      code: "quota_read_failed",
+      accountId: "acct-1",
+    }));
+  });
+
+  test("best-effort parses live quota from an unsupported Codex quota response body", async () => {
+    const recordDiagnostic = vi.fn();
+    const saveRuntimeState = vi.fn();
+    const quotaBody = {
+      user_id: "user-test-123",
+      account_id: "acct-test-456",
+      email: "tester@example.com",
+      plan_type: "prolite",
+      rate_limit: {
+        allowed: true,
+        limit_reached: false,
+        primary_window: {
+          used_percent: 66,
+          limit_window_seconds: 18000,
+          reset_at: 1777219594,
+        },
+        secondary_window: {
+          used_percent: 68,
+          limit_window_seconds: 604800,
+          reset_at: 1777400839,
+        },
+      },
+      additional_rate_limits: [
+        {
+          limit_name: "GPT-5.3-Codex-Spark",
+          rate_limit: {
+            primary_window: {
+              used_percent: 0,
+              limit_window_seconds: 18000,
+              reset_at: 1777235582,
+            },
+            secondary_window: {
+              used_percent: 0,
+              limit_window_seconds: 604800,
+              reset_at: 1777822382,
+            },
+          },
+        },
+      ],
+      credits: {
+        has_credits: false,
+        unlimited: false,
+        balance: "0",
+      },
+    };
+    const service = new BridgeService(makeConfig(), {
+      getRuntimeState: vi.fn(() => ({ primary: { usedPercent: 32 } })),
+      saveRuntimeState,
+      recordDiagnostic,
+      listAccounts: vi.fn(() => []),
+      listPendingMessages: vi.fn(() => []),
+      listConversations: vi.fn(() => []),
+      listDiagnostics: vi.fn(() => []),
+    } as any);
+    (service as any).appServerCodexRunner = {
+      readRateLimits: vi.fn(async () => {
+        throw new Error(`failed to fetch codex rate limits: Decode error: unknown variant \`prolite\`; body=${JSON.stringify(quotaBody, null, 2)}`);
+      }),
+    };
+
+    const result = await (service as any).readQuotaForChat("acct-1");
+
+    expect(result).toContain("Bridge parsed the live quota response body directly");
+    expect(result).toContain("email: tester@example.com");
+    expect(result).toContain("user_id: user-test-123");
+    expect(result).toContain("account_id: acct-test-456");
+    expect(result).toContain("plan_type: prolite");
+    expect(result).toContain("- email: tester@example.com");
+    expect(result).toContain("- user_id: user-test-123");
+    expect(result).toContain("- account_id: acct-test-456");
+    expect(result).toContain("- plan_type: prolite");
+    expect(result).toContain("- primary: 66% used / 300 min window / resets(Beijing): 2026-04-27 00:06:34");
+    expect(result).toContain("- secondary: 68% used / 10080 min window / resets(Beijing): 2026-04-29 02:27:19");
+    expect(result).toContain("- additional GPT-5.3-Codex-Spark: primary 0% / 300 min / resets(Beijing): 2026-04-27 04:33:02; secondary 0% / 10080 min / resets(Beijing): 2026-05-03 23:33:02");
+    expect(result).toContain("GPT-5.3-Codex-Spark");
+    expect(result).not.toContain("32% used");
+    expect(saveRuntimeState).toHaveBeenCalledWith("codex_rate_limits", expect.objectContaining({
+      account: expect.objectContaining({
+        email: "tester@example.com",
+        userId: "user-test-123",
+        accountId: "acct-test-456",
+        planType: "prolite",
+      }),
+      primary: expect.objectContaining({
+        usedPercent: 66,
+        windowDurationMins: 300,
+        resetsAt: 1777219594,
+      }),
+    }));
+    expect(recordDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
+      code: "quota_read_failed",
+      accountId: "acct-1",
+      detail: expect.stringContaining("prolite"),
     }));
   });
 
@@ -352,6 +477,172 @@ describe("BridgeService", () => {
     await vi.waitFor(() => {
       expect(started).toEqual([96, 97]);
     });
+  });
+
+  test("marks a pending message failed when background processing rejects before handling status", async () => {
+    const markPendingMessageStatus = vi.fn();
+    const service = new BridgeService(makeConfig(), {
+      getRuntimeState: vi.fn(),
+      saveRuntimeState: vi.fn(),
+      recordDiagnostic: vi.fn(),
+      markPendingMessageStatus,
+      listAccounts: vi.fn(() => []),
+      listPendingMessages: vi.fn(() => []),
+      listConversations: vi.fn(() => []),
+      listDiagnostics: vi.fn(() => []),
+    } as any);
+
+    (service as any).processPendingMessage = vi.fn(async () => {
+      throw new Error("preflight failed");
+    });
+
+    (service as any).maybeStartPendingMessage({
+      id: 109,
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      prompt: "hello",
+      status: "pending",
+      createdAt: "2026-04-26T05:12:44.875Z",
+      updatedAt: "2026-04-26T05:12:44.875Z",
+    });
+
+    await vi.waitFor(() => {
+      expect(markPendingMessageStatus).toHaveBeenCalledWith(109, expect.objectContaining({
+        status: "failed",
+        errorMessage: "preflight failed",
+      }));
+    });
+  });
+
+  test("interrupts a previously-started stale pending message instead of restarting it after daemon restart", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-26T11:00:00.000Z"));
+    try {
+      const markPendingMessageStatus = vi.fn();
+      const recordDiagnostic = vi.fn();
+      const runtime = new Map<string, unknown>([
+        ["pending_processing_started_at:109", "2026-04-26T10:17:47.991Z"],
+      ]);
+      const service = new BridgeService(makeConfig(), {
+        getRuntimeState: vi.fn((key: string) => runtime.get(key)),
+        saveRuntimeState: vi.fn((key: string, value: unknown) => {
+          runtime.set(key, value);
+        }),
+        recordDiagnostic,
+        markPendingMessageStatus,
+        listAccounts: vi.fn(() => []),
+        listPendingMessages: vi.fn(() => []),
+        listConversations: vi.fn(() => []),
+        listDiagnostics: vi.fn(() => []),
+      } as any);
+      (service as any).processPendingMessage = vi.fn(async () => undefined);
+
+      (service as any).maybeStartPendingMessage({
+        id: 109,
+        conversationKey: "acct-1:user-a@im.wechat",
+        accountId: "acct-1",
+        peerUserId: "user-a@im.wechat",
+        prompt: "hello",
+        status: "pending",
+        createdAt: "2026-04-26T10:17:47.991Z",
+        updatedAt: "2026-04-26T10:17:47.991Z",
+      });
+
+      expect((service as any).processPendingMessage).not.toHaveBeenCalled();
+      expect(markPendingMessageStatus).toHaveBeenCalledWith(109, expect.objectContaining({
+        status: "interrupted",
+        errorMessage: expect.stringContaining("extended idle timeout"),
+      }));
+      expect(runtime.get("pending_processing_started_at:109")).toBeNull();
+      expect(recordDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
+        code: "pending_message_reaped",
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("aborts stale idle active task when queued work is blocked behind it", () => {
+    const abortController = new AbortController();
+    const recordDiagnostic = vi.fn();
+    const service = new BridgeService(makeConfig(), {
+      getRuntimeState: vi.fn(),
+      saveRuntimeState: vi.fn(),
+      recordDiagnostic,
+      listAccounts: vi.fn(() => []),
+      listConversations: vi.fn(() => []),
+      listDiagnostics: vi.fn(() => []),
+      listPendingMessages: vi.fn((statuses?: string[]) => {
+        if (!statuses?.includes("pending")) {
+          return [];
+        }
+        return [{
+          id: 2,
+          conversationKey: "acct-1:user-a@im.wechat",
+          accountId: "acct-1",
+          peerUserId: "user-a@im.wechat",
+          prompt: "next queued work",
+          status: "pending" as const,
+          createdAt: "2026-04-25T11:06:21.108Z",
+          updatedAt: "2026-04-25T11:06:21.108Z",
+        }];
+      }),
+    } as any);
+
+    (service as any).activeTasks.set("acct-1:user-a@im.wechat", {
+      pendingMessageId: 1,
+      conversationKey: "acct-1:user-a@im.wechat",
+      prompt: "stalled work",
+      abortController,
+      supportsAppend: true,
+      runnerBackend: "app_server",
+      startedAtMs: 1000,
+      lastActivityAtMs: 1000,
+      idleNotifiedAtMs: 1000,
+    });
+
+    (service as any).reapStaleActiveTasks(1_000 + 301_000);
+
+    expect(abortController.signal.aborted).toBe(true);
+    expect(recordDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
+      code: "active_task_reaped",
+    }));
+  });
+
+  test("aborts an extended-idle active task even when no newer messages are queued", () => {
+    const abortController = new AbortController();
+    const recordDiagnostic = vi.fn();
+    const service = new BridgeService(makeConfig(), {
+      getRuntimeState: vi.fn(),
+      saveRuntimeState: vi.fn(),
+      recordDiagnostic,
+      listAccounts: vi.fn(() => []),
+      listConversations: vi.fn(() => []),
+      listDiagnostics: vi.fn(() => []),
+      listPendingMessages: vi.fn(() => []),
+    } as any);
+
+    (service as any).activeTasks.set("acct-1:user-a@im.wechat", {
+      pendingMessageId: 109,
+      conversationKey: "acct-1:user-a@im.wechat",
+      prompt: "stalled work",
+      abortController,
+      supportsAppend: true,
+      runnerBackend: "app_server",
+      startedAtMs: 1000,
+      lastActivityAtMs: 1000,
+      idleNotifiedAtMs: 1000,
+    });
+
+    (service as any).reapStaleActiveTasks(1_000 + 1_801_000);
+
+    expect(abortController.signal.aborted).toBe(true);
+    expect(abortController.signal.reason).toBeInstanceOf(CodexTurnInterruptedError);
+    expect(String((abortController.signal.reason as Error).message)).toContain("extended idle timeout");
+    expect(recordDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
+      code: "active_task_reaped",
+    }));
   });
 
   test("stores the latest raw inbound message shape for protocol debugging", async () => {
@@ -1484,6 +1775,9 @@ describe("BridgeService", () => {
       getRuntimeState() {
         return undefined;
       },
+      getContextToken() {
+        return undefined;
+      },
       resolveConversation() {
         return {
           conversationKey: "acct-1:user-a@im.wechat",
@@ -1518,6 +1812,149 @@ describe("BridgeService", () => {
     }));
     expect(stateStore.recordDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
       code: "reply_failed",
+    }));
+  });
+
+  test("notifies the chat when a pending message fails after execution starts", async () => {
+    const sendTextMessage = vi.fn(async () => ({ messageId: "msg-failure-notice" }));
+    const stateStore = {
+      listAccounts() {
+        return [];
+      },
+      getAccount() {
+        return {
+          accountId: "acct-1",
+          token: "token-1",
+          baseUrl: "https://ilinkai.weixin.qq.com",
+          loginState: "active",
+        };
+      },
+      markPendingMessageStatus: vi.fn(),
+      recordDiagnostic: vi.fn(),
+      recordDeliveryAttempt: vi.fn(),
+      saveRuntimeState: vi.fn(),
+      getRuntimeState() {
+        return undefined;
+      },
+      getContextToken() {
+        return "ctx-a";
+      },
+      resolveConversation() {
+        return {
+          conversationKey: "acct-1:user-a@im.wechat",
+          accountId: "acct-1",
+          peerUserId: "user-a@im.wechat",
+          createdAt: "2026-04-16T00:00:00.000Z",
+          updatedAt: "2026-04-16T00:00:00.000Z",
+        };
+      },
+    };
+    const service = new BridgeService(makeConfig(), stateStore as any);
+    (service as any).createAccountClient = vi.fn(() => ({
+      getTypingTicket: vi.fn(async () => "typing-ticket-1"),
+      setTyping: vi.fn(async () => ({ ok: true })),
+      stopTyping: vi.fn(async () => ({ ok: true })),
+      sendTextMessage,
+    }));
+    (service as any).createCodexRunnerForPending = vi.fn(() => ({
+      runTurn: vi.fn(async () => {
+        throw new Error("turn turn-1 did not include a final agent message.");
+      }),
+    }));
+
+    await expect((service as any).processPendingMessage({
+      id: 100,
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-old",
+      prompt: "hello",
+      status: "pending",
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+    })).resolves.toBeUndefined();
+
+    expect(stateStore.markPendingMessageStatus).toHaveBeenCalledWith(100, expect.objectContaining({
+      status: "failed",
+      errorMessage: "turn turn-1 did not include a final agent message.",
+    }));
+    expect(sendTextMessage).toHaveBeenCalledWith(expect.objectContaining({
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-a",
+      text: expect.stringContaining("Codex 任务未能在发送回复前完成。"),
+    }));
+    expect(stateStore.recordDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
+      code: "reply_failure_notified",
+    }));
+  });
+
+  test("notifies the chat when an auto-reaped stale task is interrupted", async () => {
+    const sendTextMessage = vi.fn(async () => ({ messageId: "msg-stale-notice" }));
+    const stateStore = {
+      listAccounts() {
+        return [];
+      },
+      getAccount() {
+        return {
+          accountId: "acct-1",
+          token: "token-1",
+          baseUrl: "https://ilinkai.weixin.qq.com",
+          loginState: "active",
+        };
+      },
+      markPendingMessageStatus: vi.fn(),
+      recordDiagnostic: vi.fn(),
+      recordDeliveryAttempt: vi.fn(),
+      saveRuntimeState: vi.fn(),
+      getRuntimeState() {
+        return undefined;
+      },
+      getContextToken() {
+        return "ctx-a";
+      },
+      resolveConversation() {
+        return {
+          conversationKey: "acct-1:user-a@im.wechat",
+          accountId: "acct-1",
+          peerUserId: "user-a@im.wechat",
+          createdAt: "2026-04-16T00:00:00.000Z",
+          updatedAt: "2026-04-16T00:00:00.000Z",
+        };
+      },
+    };
+    const service = new BridgeService(makeConfig(), stateStore as any);
+    (service as any).createAccountClient = vi.fn(() => ({
+      getTypingTicket: vi.fn(async () => "typing-ticket-1"),
+      setTyping: vi.fn(async () => ({ ok: true })),
+      stopTyping: vi.fn(async () => ({ ok: true })),
+      sendTextMessage,
+    }));
+    (service as any).createCodexRunnerForPending = vi.fn(() => ({
+      runTurn: vi.fn(async () => {
+        throw new CodexTurnInterruptedError("Stale Codex task interrupted after extended idle timeout.");
+      }),
+    }));
+
+    await expect((service as any).processPendingMessage({
+      id: 109,
+      conversationKey: "acct-1:user-a@im.wechat",
+      accountId: "acct-1",
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-old",
+      prompt: "hello",
+      status: "pending",
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+    })).resolves.toBeUndefined();
+
+    expect(stateStore.markPendingMessageStatus).toHaveBeenCalledWith(109, expect.objectContaining({
+      status: "interrupted",
+      errorMessage: "Stale Codex task interrupted after extended idle timeout.",
+    }));
+    expect(sendTextMessage).toHaveBeenCalledWith(expect.objectContaining({
+      peerUserId: "user-a@im.wechat",
+      contextToken: "ctx-a",
+      text: expect.stringContaining("Codex 任务未能在发送回复前完成。"),
     }));
   });
 });

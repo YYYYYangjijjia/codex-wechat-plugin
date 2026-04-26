@@ -85,15 +85,30 @@ function resolveAccount(db, options) {
   if (options.accountId) {
     const row = db.prepare("select account_id, token, base_url from accounts where account_id = ? and login_state = ?").get(options.accountId, "active");
     if (!row) {
-      throw new Error(`Active account not found: ${options.accountId}`);
+      throw new Error(buildAccountLookupError(`Active account not found: ${options.accountId}`, options));
     }
     return row;
   }
   const row = db.prepare("select account_id, token, base_url from accounts where login_state = ? order by updated_at desc limit 1").get("active");
   if (!row) {
-    throw new Error("No active bridge account found.");
+    throw new Error(buildAccountLookupError("No active bridge account found.", options));
   }
   return row;
+}
+
+function buildAccountLookupError(message, options) {
+  const stateDb = path.resolve(options.stateDb || defaultStateDb);
+  const globalStateDb = path.resolve(defaultStateDb);
+  const isGlobalStateDb = stateDb.toLowerCase() === globalStateDb.toLowerCase();
+  return [
+    message,
+    `state_db: ${stateDb}`,
+    `global_runtime_state_db: ${globalStateDb}`,
+    `reading_global_runtime: ${isGlobalStateDb ? 'yes' : 'no'}`,
+    isGlobalStateDb
+      ? 'The global runtime database has no active account record. Start the WeChat login flow first.'
+      : 'This command is not reading the global WeChat Bridge runtime database. Pass --state-db for the installed runtime or run from the installed plugin root.',
+  ].join('\n');
 }
 
 function resolveConversation(db, accountId, options) {
@@ -129,13 +144,16 @@ async function main() {
   const runtimeModules = await loadRuntimeModules(runtimeRoot);
   const dbPath = options.stateDb || path.join(runtimeRoot, 'state', 'bridge.sqlite');
   const db = openDatabase(dbPath);
+  let account;
+  let conversation;
+  let contextToken;
   try {
-    const account = resolveAccount(db, options);
+    account = resolveAccount(db, options);
     if (!account.token) {
       throw new Error(`Account ${account.account_id} has no usable token.`);
     }
-    const conversation = resolveConversation(db, account.account_id, options);
-    const contextToken = resolveContextToken(db, account.account_id, conversation.peer_user_id, options.contextToken);
+    conversation = resolveConversation(db, account.account_id, options);
+    contextToken = resolveContextToken(db, account.account_id, conversation.peer_user_id, options.contextToken);
 
     if (options.dryRun) {
       console.log(JSON.stringify({
@@ -148,37 +166,37 @@ async function main() {
       }, null, 2));
       return;
     }
-
-    const { loadBridgeConfig, createStateStore, BridgeService } = runtimeModules;
-    const config = loadBridgeConfig(runtimeRoot);
-    const stateStore = createStateStore({ databasePath: dbPath });
-    try {
-      const service = new BridgeService({
-        ...config,
-        workspaceDir: runtimeRoot,
-      }, stateStore);
-      const result = await service.sendFileMessage({
-        accountId: account.account_id,
-        peerUserId: conversation.peer_user_id,
-        contextToken,
-        filePath,
-      });
-
-      console.log(JSON.stringify({
-        ok: true,
-        filePath,
-        kind: result.kind,
-        messageId: result.messageId,
-        status: result.status || 'sent',
-        accountId: account.account_id,
-        peerUserId: conversation.peer_user_id,
-        conversationKey: conversation.conversation_key,
-      }));
-    } finally {
-      stateStore.close();
-    }
   } finally {
     db.close();
+  }
+
+  const { loadBridgeConfig, createStateStore, BridgeService } = runtimeModules;
+  const config = loadBridgeConfig(runtimeRoot);
+  const stateStore = createStateStore({ databasePath: dbPath });
+  try {
+    const service = new BridgeService({
+      ...config,
+      workspaceDir: runtimeRoot,
+    }, stateStore);
+    const result = await service.sendFileMessage({
+      accountId: account.account_id,
+      peerUserId: conversation.peer_user_id,
+      contextToken,
+      filePath,
+    });
+
+    console.log(JSON.stringify({
+      ok: true,
+      filePath,
+      kind: result.kind,
+      messageId: result.messageId,
+      status: result.status || 'sent',
+      accountId: account.account_id,
+      peerUserId: conversation.peer_user_id,
+      conversationKey: conversation.conversation_key,
+    }));
+  } finally {
+    stateStore.close();
   }
 }
 

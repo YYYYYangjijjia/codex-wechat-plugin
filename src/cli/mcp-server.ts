@@ -1,12 +1,14 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { loadBridgeConfig } from "../config/app-config.js";
+import { resolveRuntimeRoot } from "../config/runtime-root.js";
 import { BridgeService } from "../daemon/bridge-service.js";
 import { createWechatBridgeMcpServer } from "../mcp/wechat-bridge-mcp-server.js";
 import { createStateStore } from "../state/sqlite-state-store.js";
 
 async function main(): Promise<void> {
-  const config = loadBridgeConfig();
+  const runtimeRoot = resolveRuntimeRoot({ moduleUrl: import.meta.url });
+  const config = loadBridgeConfig(runtimeRoot);
   const stateStore = createStateStore({ databasePath: config.databasePath });
   const service = new BridgeService(config, stateStore);
   const server = createWechatBridgeMcpServer({

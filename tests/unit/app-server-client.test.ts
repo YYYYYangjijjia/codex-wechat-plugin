@@ -1,6 +1,7 @@
 ﻿import { describe, expect, test } from "vitest";
 
 import { AppServerClient } from "../../src/codex/app-server-client.js";
+import { afterEach, vi } from "vitest";
 
 type MessageHandler = (message: unknown) => void;
 
@@ -45,6 +46,10 @@ class FakeTransport {
 }
 
 describe("AppServerClient", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   test("initializes the app-server connection", async () => {
     const transport = new FakeTransport();
     const client = new AppServerClient({
@@ -433,6 +438,31 @@ describe("AppServerClient", () => {
       primary: { usedPercent: 5, windowDurationMins: 300, resetsAt: 1776334444 },
       secondary: { usedPercent: 18, windowDurationMins: 10080, resetsAt: 1776686215 },
     });
+  });
+
+  test("times out app-server requests that never receive a response", async () => {
+    vi.useFakeTimers();
+    const transport = new FakeTransport();
+    const client = new AppServerClient({
+      transport,
+      clientInfo: { name: "test", version: "0.1.0" },
+      requestTimeoutMs: 25,
+    });
+
+    const initPromise = client.initialize();
+    await flushMicrotasks();
+    expect(transport.sent[0]).toEqual({
+      id: 1,
+      method: "initialize",
+      params: {
+        clientInfo: { name: "test", version: "0.1.0" },
+      },
+    });
+
+    const rejection = expect(initPromise).rejects.toThrow("app-server request initialize timed out after 25ms");
+    await vi.advanceTimersByTimeAsync(25);
+    await rejection;
+    transport.push({ id: 1, result: { userAgent: "late", platformFamily: "windows", platformOs: "windows" } });
   });
 
   test("reopens the transport after client.close()", async () => {

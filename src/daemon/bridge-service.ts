@@ -11,6 +11,7 @@ import { AppServerCodexRunner } from "../codex/app-server-codex-runner.js";
 import { AppServerProcessManager } from "../codex/app-server-process-manager.js";
 import { WebSocketAppServerTransport } from "../codex/app-server-websocket-transport.js";
 import { CodexTurnFallbackRequestedError, CodexTurnInterruptedError, type ActiveTurnControl, type CodexRunner, type ReasoningEffort, type RunnerBackend } from "../codex/codex-runner.js";
+import { getInstalledPluginRoot } from "../config/runtime-root.js";
 import { listInstalledSkills } from "../commands/installed-skills.js";
 import { runTurnWithFallback } from "../codex/fallback-codex-runner.js";
 import {
@@ -31,6 +32,10 @@ const LIFECYCLE_NOTIFICATION_LIMIT = 5;
 const PENDING_REVIEW_PREFIX = "pending_review:";
 const RECOVERY_MESSAGE_PREVIEW_LENGTH = 120;
 const PENDING_LIFECYCLE_NOTIFICATION_KEY = "pending_lifecycle_notification";
+const PENDING_PROCESSING_STARTED_AT_PREFIX = "pending_processing_started_at:";
+const ACTIVE_TASK_REAP_AFTER_IDLE_MS = 5 * 60_000;
+const ACTIVE_TASK_REAP_AFTER_EXTENDED_IDLE_MS = 30 * 60_000;
+const STALE_TASK_INTERRUPTED_PREFIX = "Stale Codex task interrupted";
 
 type RuntimePreferences = {
   model?: string | undefined;
@@ -56,6 +61,9 @@ type ActiveTaskState = {
   fallbackEligible?: boolean | undefined;
   fallbackRequestedBackend?: RunnerBackend | undefined;
   control?: ActiveTurnControl | undefined;
+  startedAtMs?: number | undefined;
+  lastActivityAtMs?: number | undefined;
+  idleNotifiedAtMs?: number | undefined;
 };
 
 function extractTextPrompt(message: NonNullable<GetUpdatesResponse["msgs"]>[number]): string {
@@ -138,6 +146,19 @@ function isReplyContextExpiredError(error: unknown): boolean {
   return error instanceof Error && /ret=-2|reply context is no longer valid|refresh context_token/i.test(error.message);
 }
 
+function formatReplyContextQueuedReason(): string {
+  return "Delivery was queued because WeChat rejected the stored reply context (ret=-2). It will retry automatically after this same chat sends any fresh inbound WeChat message or command, which refreshes the context_token.";
+}
+
+function isUnsupportedQuotaResponseError(error: unknown): boolean {
+  return error instanceof Error
+    && /unknown .*plan|plan_?type|plan variant|unsupported .*quota|rate.?limits?.*(decode|parse|variant)|prolite/i.test(error.message);
+}
+
+function isAutoReapedStaleTaskInterruption(error: unknown): boolean {
+  return error instanceof CodexTurnInterruptedError && error.message.startsWith(STALE_TASK_INTERRUPTED_PREFIX);
+}
+
 export class BridgeService {
   private readonly loginManager: LoginManager;
   private readonly execCodexRunner: ExecCodexRunner;
@@ -216,6 +237,24 @@ export class BridgeService {
     return this.stateStore.listAccounts();
   }
 
+  getRuntimeInfo(): {
+    workspaceDir: string;
+    stateDir: string;
+    databasePath: string;
+    installedPluginRoot: string;
+    readingInstalledRuntime: boolean;
+  } {
+    const installedPluginRoot = getInstalledPluginRoot();
+    return {
+      workspaceDir: this.config.workspaceDir,
+      stateDir: this.config.stateDir,
+      databasePath: this.config.databasePath,
+      installedPluginRoot,
+      readingInstalledRuntime: isSamePath(this.config.workspaceDir, installedPluginRoot)
+        || isSamePath(this.config.stateDir, path.join(installedPluginRoot, "state")),
+    };
+  }
+
   listConversations(): ReturnType<StateStore["listConversations"]> {
     return this.stateStore.listConversations();
   }
@@ -228,7 +267,7 @@ export class BridgeService {
     return this.stateStore.listDiagnostics(limit);
   }
 
-  async sendTextMessage(input: { accountId: string; peerUserId: string; text: string; contextToken?: string }): Promise<{ messageId: string; status?: "queued" | "sent" }> {
+  async sendTextMessage(input: { accountId: string; peerUserId: string; text: string; contextToken?: string }): Promise<{ messageId: string; status?: "queued" | "sent"; queuedReason?: string | undefined }> {
     const account = this.requireAccount(input.accountId);
     const client = this.createAccountClient(account.accountId);
     const contextToken = input.contextToken ?? this.stateStore.getContextToken(account.accountId, input.peerUserId);
@@ -283,7 +322,7 @@ export class BridgeService {
             error: message,
           }),
         });
-        return { messageId: `queued:${queuedId}`, status: "queued" };
+        return { messageId: `queued:${queuedId}`, status: "queued", queuedReason: formatReplyContextQueuedReason() };
       }
       this.stateStore.recordDeliveryAttempt({
         conversationKey: `${input.accountId}:${input.peerUserId}`,
@@ -312,7 +351,7 @@ export class BridgeService {
     filePath: string;
     contextToken?: string;
     captionText?: string;
-  }): Promise<{ messageId: string; kind: "image" | "file"; status?: "queued" | "sent" }> {
+  }): Promise<{ messageId: string; kind: "image" | "file"; status?: "queued" | "sent"; queuedReason?: string | undefined }> {
     const account = this.requireAccount(input.accountId);
     const client = this.createAccountClient(account.accountId);
     const contextToken = input.contextToken ?? this.stateStore.getContextToken(account.accountId, input.peerUserId);
@@ -369,7 +408,7 @@ export class BridgeService {
             error: message,
           }),
         });
-        return { messageId: `queued:${queuedId}`, kind: "file", status: "queued" };
+        return { messageId: `queued:${queuedId}`, kind: "file", status: "queued", queuedReason: formatReplyContextQueuedReason() };
       }
       this.stateStore.recordDeliveryAttempt({
         conversationKey: `${input.accountId}:${input.peerUserId}`,
@@ -641,6 +680,8 @@ export class BridgeService {
         activeAccounts: accounts.length,
       });
 
+      this.reapStaleActiveTasks();
+
       for (const pending of this.stateStore.listPendingMessages(["pending"]).sort((left, right) => left.id - right.id)) {
         this.maybeStartPendingMessage(pending);
       }
@@ -727,6 +768,35 @@ export class BridgeService {
     if (pending.status !== "pending") {
       return;
     }
+    const existingStartedAtMs = this.getPendingProcessingStartedAtMs(pending.id);
+    if (existingStartedAtMs !== undefined && Date.now() - existingStartedAtMs >= ACTIVE_TASK_REAP_AFTER_EXTENDED_IDLE_MS) {
+      const errorMessage = `${STALE_TASK_INTERRUPTED_PREFIX} after extended idle timeout.`;
+      this.clearPendingDeliveryIntent(pending.id);
+      this.clearPendingProcessingStartedAt(pending.id);
+      this.stateStore.markPendingMessageStatus(pending.id, {
+        status: "interrupted" as PendingMessageRecord["status"],
+        thread: pending.runnerBackend && pending.runnerThreadId
+          ? {
+              runnerBackend: pending.runnerBackend,
+              runnerThreadId: pending.runnerThreadId,
+              runnerCwd: pending.runnerCwd,
+            }
+          : pending.threadId,
+        errorMessage,
+      });
+      this.stateStore.recordDiagnostic({
+        code: "pending_message_reaped",
+        accountId: pending.accountId,
+        detail: JSON.stringify({
+          conversationKey: pending.conversationKey,
+          pendingMessageId: pending.id,
+          startedAtMs: existingStartedAtMs,
+          reason: "extended_idle_timeout_after_restart",
+        }),
+      });
+      void this.notifyReapedPendingMessage(pending, errorMessage);
+      return;
+    }
     if ((this.getPendingReviewState(pending.conversationKey)?.count ?? 0) > 0) {
       return;
     }
@@ -737,17 +807,42 @@ export class BridgeService {
     ) {
       return;
     }
+    if (existingStartedAtMs === undefined) {
+      this.savePendingProcessingStartedAt(pending.id);
+    }
     this.processingPendingIds.add(pending.id);
     this.processingConversationKeys.add(pending.conversationKey);
+    this.stateStore.recordDiagnostic({
+      code: "pending_message_started",
+      accountId: pending.accountId,
+      detail: JSON.stringify({
+        conversationKey: pending.conversationKey,
+        pendingMessageId: pending.id,
+      }),
+    });
     void this.processPendingMessage(pending)
       .catch((error) => {
+        const errorMessage = error instanceof Error ? error.message : String(error);
         this.stateStore.recordDiagnostic({
           code: "background_task_error",
           accountId: pending.accountId,
-          detail: error instanceof Error ? error.message : String(error),
+          detail: errorMessage,
+        });
+        this.clearPendingDeliveryIntent(pending.id);
+        this.stateStore.markPendingMessageStatus(pending.id, {
+          status: "failed",
+          thread: pending.runnerBackend && pending.runnerThreadId
+            ? {
+                runnerBackend: pending.runnerBackend,
+                runnerThreadId: pending.runnerThreadId,
+                runnerCwd: pending.runnerCwd,
+              }
+            : pending.threadId,
+          errorMessage,
         });
       })
       .finally(() => {
+        this.clearPendingProcessingStartedAt(pending.id);
         this.processingPendingIds.delete(pending.id);
         this.processingConversationKeys.delete(pending.conversationKey);
         this.activeTasks.delete(pending.conversationKey);
@@ -768,6 +863,36 @@ export class BridgeService {
     }
   }
 
+  private reapStaleActiveTasks(nowMs = Date.now()): void {
+    const pending = this.stateStore.listPendingMessages(["pending"]);
+    for (const [conversationKey, activeTask] of this.activeTasks) {
+      if (!activeTask.idleNotifiedAtMs || activeTask.abortController.signal.aborted) {
+        continue;
+      }
+      const queuedBehindActiveTask = pending.some((row) => row.conversationKey === conversationKey && row.id !== activeTask.pendingMessageId);
+      const idleAfterNoticeMs = nowMs - activeTask.idleNotifiedAtMs;
+      const shouldReapForQueuedWork = queuedBehindActiveTask && idleAfterNoticeMs >= ACTIVE_TASK_REAP_AFTER_IDLE_MS;
+      const shouldReapForExtendedIdle = idleAfterNoticeMs >= ACTIVE_TASK_REAP_AFTER_EXTENDED_IDLE_MS;
+      if (!shouldReapForQueuedWork && !shouldReapForExtendedIdle) {
+        continue;
+      }
+      const reason = shouldReapForExtendedIdle
+        ? `${STALE_TASK_INTERRUPTED_PREFIX} after extended idle timeout.`
+        : `${STALE_TASK_INTERRUPTED_PREFIX} after idle timeout because newer WeChat messages are waiting.`;
+      activeTask.abortController.abort(new CodexTurnInterruptedError(reason));
+      this.stateStore.recordDiagnostic({
+        code: "active_task_reaped",
+        detail: JSON.stringify({
+          conversationKey,
+          pendingMessageId: activeTask.pendingMessageId,
+          idleNotifiedAtMs: activeTask.idleNotifiedAtMs,
+          reason: shouldReapForExtendedIdle ? "extended_idle_timeout" : "queued_work_after_idle_timeout",
+          queuedPendingMessages: pending.filter((row) => row.conversationKey === conversationKey && row.id !== activeTask.pendingMessageId).length,
+        }),
+      });
+    }
+  }
+
   private async processPendingMessage(pending: PendingMessageRecord): Promise<void> {
     const client = this.createAccountClient(pending.accountId);
     const runtimePreferences = this.getRuntimePreferences();
@@ -778,6 +903,7 @@ export class BridgeService {
 
     const setActiveTask = (overrides?: Partial<ActiveTaskState>): void => {
       const current = this.activeTasks.get(pending.conversationKey);
+      const nowMs = Date.now();
       this.activeTasks.set(pending.conversationKey, {
         pendingMessageId: pending.id,
         conversationKey: pending.conversationKey,
@@ -790,6 +916,9 @@ export class BridgeService {
         ...(overrides?.fallbackEligible !== undefined ? { fallbackEligible: overrides.fallbackEligible } : current?.fallbackEligible !== undefined ? { fallbackEligible: current.fallbackEligible } : {}),
         ...(overrides?.fallbackRequestedBackend ? { fallbackRequestedBackend: overrides.fallbackRequestedBackend } : current?.fallbackRequestedBackend ? { fallbackRequestedBackend: current.fallbackRequestedBackend } : {}),
         ...(overrides?.control ? { control: overrides.control } : current?.control ? { control: current.control } : {}),
+        startedAtMs: overrides?.startedAtMs ?? current?.startedAtMs ?? nowMs,
+        lastActivityAtMs: overrides?.lastActivityAtMs ?? current?.lastActivityAtMs ?? nowMs,
+        ...(overrides?.idleNotifiedAtMs !== undefined ? { idleNotifiedAtMs: overrides.idleNotifiedAtMs } : current?.idleNotifiedAtMs !== undefined ? { idleNotifiedAtMs: current.idleNotifiedAtMs } : {}),
       });
     };
 
@@ -829,7 +958,10 @@ export class BridgeService {
       if (!current || current.fallbackEligible) {
         return;
       }
-      setActiveTask({ fallbackEligible: true });
+      setActiveTask({
+        fallbackEligible: true,
+        idleNotifiedAtMs: Date.now(),
+      });
       this.stateStore.recordDiagnostic({
         code: "reply_idle_timeout",
         accountId: pending.accountId,
@@ -889,6 +1021,7 @@ export class BridgeService {
             turnId: control.turnId,
             supportsAppend: control.supportsAppend,
             control,
+            lastActivityAtMs: Date.now(),
           });
         },
       });
@@ -967,6 +1100,14 @@ export class BridgeService {
           status: "interrupted",
           errorMessage: resolvedError.message,
         });
+        if (isAutoReapedStaleTaskInterruption(resolvedError)) {
+          await this.notifyPendingFailure({
+            client,
+            pending,
+            contextToken: effectiveContextToken,
+            errorMessage: resolvedError.message,
+          });
+        }
         return;
       }
       this.clearPendingDeliveryIntent(pending.id);
@@ -985,6 +1126,124 @@ export class BridgeService {
         code: "reply_failed",
         accountId: pending.accountId,
         detail: resolvedError instanceof Error ? resolvedError.message : String(resolvedError),
+      });
+      await this.notifyPendingFailure({
+        client,
+        pending,
+        contextToken: effectiveContextToken,
+        errorMessage: resolvedError instanceof Error ? resolvedError.message : String(resolvedError),
+      });
+    }
+  }
+
+  private async notifyPendingFailure(input: {
+    client: HttpWeixinClient;
+    pending: PendingMessageRecord;
+    contextToken?: string | undefined;
+    errorMessage: string;
+  }): Promise<void> {
+    if (!input.contextToken) {
+      this.stateStore.recordDiagnostic({
+        code: "reply_failure_notice_missing_context",
+        accountId: input.pending.accountId,
+        detail: JSON.stringify({
+          conversationKey: input.pending.conversationKey,
+          pendingMessageId: input.pending.id,
+          error: input.errorMessage,
+        }),
+      });
+      return;
+    }
+    const text = this.formatPendingFailureMessage(input.pending, input.errorMessage);
+    try {
+      await input.client.sendTextMessage({
+        peerUserId: input.pending.peerUserId,
+        contextToken: input.contextToken,
+        text,
+      });
+      this.stateStore.recordDeliveryAttempt({
+        conversationKey: input.pending.conversationKey,
+        status: "failure_notice_sent",
+        peerUserId: input.pending.peerUserId,
+        contextToken: input.contextToken,
+        prompt: input.pending.prompt,
+        finalMessage: text,
+      });
+      this.stateStore.recordDiagnostic({
+        code: "reply_failure_notified",
+        accountId: input.pending.accountId,
+        detail: JSON.stringify({
+          conversationKey: input.pending.conversationKey,
+          pendingMessageId: input.pending.id,
+        }),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isReplyContextExpiredError(error)) {
+        const queuedId = this.stateStore.enqueueOutboundDelivery({
+          conversationKey: input.pending.conversationKey,
+          accountId: input.pending.accountId,
+          peerUserId: input.pending.peerUserId,
+          contextToken: input.contextToken,
+          kind: "text",
+          payload: {
+            text,
+          },
+          status: "waiting_for_fresh_context",
+          errorMessage: message,
+        });
+        this.stateStore.recordDeliveryAttempt({
+          conversationKey: input.pending.conversationKey,
+          status: "failure_notice_queued",
+          errorMessage: message,
+          peerUserId: input.pending.peerUserId,
+          contextToken: input.contextToken,
+          prompt: input.pending.prompt,
+          finalMessage: text,
+        });
+        this.stateStore.recordDiagnostic({
+          code: "reply_failure_notice_queued",
+          accountId: input.pending.accountId,
+          detail: JSON.stringify({
+            conversationKey: input.pending.conversationKey,
+            pendingMessageId: input.pending.id,
+            deliveryId: queuedId,
+            error: message,
+          }),
+        });
+        return;
+      }
+      this.stateStore.recordDiagnostic({
+        code: "reply_failure_notice_failed",
+        accountId: input.pending.accountId,
+        detail: JSON.stringify({
+          conversationKey: input.pending.conversationKey,
+          pendingMessageId: input.pending.id,
+          error: message,
+        }),
+      });
+    }
+  }
+
+  private async notifyReapedPendingMessage(pending: PendingMessageRecord, errorMessage: string): Promise<void> {
+    try {
+      const client = this.createAccountClient(pending.accountId);
+      const contextToken = this.stateStore.getContextToken(pending.accountId, pending.peerUserId) ?? pending.contextToken;
+      await this.notifyPendingFailure({
+        client,
+        pending,
+        contextToken,
+        errorMessage,
+      });
+    } catch (error) {
+      this.stateStore.recordDiagnostic({
+        code: "pending_reap_notice_failed",
+        accountId: pending.accountId,
+        detail: JSON.stringify({
+          conversationKey: pending.conversationKey,
+          pendingMessageId: pending.id,
+          error: error instanceof Error ? error.message : String(error),
+        }),
       });
     }
   }
@@ -1005,13 +1264,21 @@ export class BridgeService {
     };
   }
 
+  private formatPendingFailureMessage(pending: PendingMessageRecord, errorMessage: string): string {
+    return [
+      "Codex 任务未能在发送回复前完成。",
+      `Pending message id: ${pending.id}`,
+      `原因: ${shortenMiddle(errorMessage, 240)}`,
+      "这条消息已标记为失败或中断。请直接重新发送任务；如果状态仍异常，可先发送 /status 或 /restart。",
+    ].join("\n");
+  }
+
   private formatIdleTimeoutMessage(timeoutMs: number): string {
     const timeoutMinutes = Math.max(1, Math.round(timeoutMs / 60000));
     return [
       `⚠️ 当前任务已连续 ${timeoutMinutes} 分钟没有新的输出。`,
       "默认策略是不切换 fallback，当前仍在继续等待。",
       "如果你怀疑任务已经卡死，请发送 /stop 终止当前任务。",
-      "如果你要改用 exec fallback 重跑本轮任务，请发送 /fallback continue。",
     ].join("\n");
   }
 
@@ -1235,17 +1502,41 @@ export class BridgeService {
       this.stateStore.saveRuntimeState("codex_rate_limits", rateLimits);
       return formatQuotaSnapshot(rateLimits);
     } catch (error) {
+      const parsedQuota = parseQuotaSnapshotFromUnsupportedResponseError(error);
       this.stateStore.recordDiagnostic({
         code: "quota_read_failed",
         accountId,
-        detail: error instanceof Error ? error.message : String(error),
+        detail: formatQuotaReadFailureDiagnostic(error, parsedQuota),
       });
+      if (parsedQuota) {
+        this.stateStore.saveRuntimeState("codex_rate_limits", parsedQuota);
+        return [
+          "Live quota read failed because Codex returned an unsupported quota response. Bridge parsed the live quota response body directly.",
+          "",
+          formatQuotaSnapshot(parsedQuota),
+        ].join("\n");
+      }
       const cached = this.stateStore.getRuntimeState("codex_rate_limits");
       if (isObject(cached)) {
+        if (isUnsupportedQuotaResponseError(error)) {
+          return [
+            "Live quota read failed because Codex returned an unsupported quota response. Showing the latest cached snapshot instead.",
+            `detail: ${error instanceof Error ? error.message : String(error)}`,
+            "",
+            formatQuotaSnapshot(cached),
+          ].join("\n");
+        }
         return [
           "Live quota read failed. Showing the latest cached snapshot instead.",
           "",
           formatQuotaSnapshot(cached),
+        ].join("\n");
+      }
+      if (isUnsupportedQuotaResponseError(error)) {
+        return [
+          "Unable to read the current Codex quota because Codex returned an unsupported quota response.",
+          "This does not affect WeChat message delivery.",
+          `detail: ${error instanceof Error ? error.message : String(error)}`,
         ].join("\n");
       }
       return `Unable to read the current Codex quota: ${error instanceof Error ? error.message : String(error)}`;
@@ -1593,6 +1884,27 @@ export class BridgeService {
     return `pending_delivery_intent:${pendingMessageId}`;
   }
 
+  private pendingProcessingStartedAtKey(pendingMessageId: number): string {
+    return `${PENDING_PROCESSING_STARTED_AT_PREFIX}${pendingMessageId}`;
+  }
+
+  private savePendingProcessingStartedAt(pendingMessageId: number): void {
+    this.stateStore.saveRuntimeState(this.pendingProcessingStartedAtKey(pendingMessageId), new Date().toISOString());
+  }
+
+  private getPendingProcessingStartedAtMs(pendingMessageId: number): number | undefined {
+    const value = this.stateStore.getRuntimeState(this.pendingProcessingStartedAtKey(pendingMessageId));
+    if (typeof value !== "string") {
+      return undefined;
+    }
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  private clearPendingProcessingStartedAt(pendingMessageId: number): void {
+    this.stateStore.saveRuntimeState(this.pendingProcessingStartedAtKey(pendingMessageId), null);
+  }
+
   private getPendingDeliveryIntent(pendingMessageId: number): DeliveryIntent | undefined {
     const value = this.stateStore.getRuntimeState(this.pendingDeliveryIntentKey(pendingMessageId));
     if (!isObject(value) || typeof value.enabled !== "boolean" || !Array.isArray(value.requestedKinds) || !Array.isArray(value.evidenceText)) {
@@ -1716,35 +2028,297 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function parseQuotaSnapshotFromUnsupportedResponseError(error: unknown): Record<string, unknown> | undefined {
+  if (!isUnsupportedQuotaResponseError(error)) {
+    return undefined;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const body = extractJsonBodyFromErrorMessage(message);
+  if (!body) {
+    return undefined;
+  }
+  return parseWhamUsageQuotaSnapshot(body);
+}
+
+function extractJsonBodyFromErrorMessage(message: string): unknown | undefined {
+  const markerIndex = message.indexOf("body=");
+  if (markerIndex < 0) {
+    return undefined;
+  }
+  const start = message.indexOf("{", markerIndex + "body=".length);
+  if (start < 0) {
+    return undefined;
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < message.length; index += 1) {
+    const char = message[index]!;
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char !== "}") {
+      continue;
+    }
+    depth -= 1;
+    if (depth === 0) {
+      try {
+        return JSON.parse(message.slice(start, index + 1)) as unknown;
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+function parseWhamUsageQuotaSnapshot(value: unknown): Record<string, unknown> | undefined {
+  if (!isObject(value)) {
+    return undefined;
+  }
+  const rateLimit = isObject(value.rate_limit) ? value.rate_limit : undefined;
+  if (!rateLimit) {
+    return undefined;
+  }
+  const primary = parseQuotaWindow(rateLimit.primary_window);
+  const secondary = parseQuotaWindow(rateLimit.secondary_window);
+  if (!primary && !secondary) {
+    return undefined;
+  }
+
+  const snapshot: Record<string, unknown> = {};
+  const account: Record<string, unknown> = {};
+  if (typeof value.email === "string") {
+    account.email = value.email;
+  }
+  if (typeof value.user_id === "string") {
+    account.userId = value.user_id;
+  }
+  if (typeof value.account_id === "string") {
+    account.accountId = value.account_id;
+  }
+  if (typeof value.plan_type === "string") {
+    account.planType = value.plan_type;
+  }
+  if (Object.keys(account).length > 0) {
+    snapshot.account = account;
+  }
+  if (typeof rateLimit.allowed === "boolean") {
+    snapshot.allowed = rateLimit.allowed;
+  }
+  if (typeof rateLimit.limit_reached === "boolean") {
+    snapshot.limitReached = rateLimit.limit_reached;
+  }
+  if (primary) {
+    snapshot.primary = primary;
+  }
+  if (secondary) {
+    snapshot.secondary = secondary;
+  }
+  const additional = parseAdditionalRateLimits(value.additional_rate_limits);
+  if (additional.length > 0) {
+    snapshot.additional = additional;
+  }
+  const credits = parseCredits(value.credits);
+  if (credits) {
+    snapshot.credits = credits;
+  }
+  return snapshot;
+}
+
+function parseAdditionalRateLimits(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      if (!isObject(item)) {
+        return undefined;
+      }
+      const rateLimit = isObject(item.rate_limit) ? item.rate_limit : undefined;
+      if (!rateLimit) {
+        return undefined;
+      }
+      const primary = parseQuotaWindow(rateLimit.primary_window);
+      const secondary = parseQuotaWindow(rateLimit.secondary_window);
+      if (!primary && !secondary) {
+        return undefined;
+      }
+      const parsed: Record<string, unknown> = {};
+      if (typeof item.limit_name === "string") {
+        parsed.name = item.limit_name;
+      }
+      if (typeof item.metered_feature === "string") {
+        parsed.meteredFeature = item.metered_feature;
+      }
+      if (primary) {
+        parsed.primary = primary;
+      }
+      if (secondary) {
+        parsed.secondary = secondary;
+      }
+      return parsed;
+    })
+    .filter((item): item is Record<string, unknown> => item !== undefined);
+}
+
+function parseQuotaWindow(value: unknown): Record<string, unknown> | undefined {
+  if (!isObject(value)) {
+    return undefined;
+  }
+  const parsed: Record<string, unknown> = {};
+  const usedPercent = readNumber(value.used_percent) ?? readNumber(value.usedPercent);
+  const windowSeconds = readNumber(value.limit_window_seconds);
+  const windowDurationMins = readNumber(value.windowDurationMins) ?? (windowSeconds !== undefined ? Math.round(windowSeconds / 60) : undefined);
+  const resetsAt = readNumber(value.reset_at) ?? readNumber(value.resetsAt);
+  if (usedPercent !== undefined) {
+    parsed.usedPercent = usedPercent;
+  }
+  if (windowDurationMins !== undefined) {
+    parsed.windowDurationMins = windowDurationMins;
+  }
+  if (resetsAt !== undefined) {
+    parsed.resetsAt = resetsAt;
+  }
+  return Object.keys(parsed).length > 0 ? parsed : undefined;
+}
+
+function parseCredits(value: unknown): Record<string, unknown> | undefined {
+  if (!isObject(value)) {
+    return undefined;
+  }
+  const parsed: Record<string, unknown> = {};
+  if (typeof value.has_credits === "boolean") {
+    parsed.hasCredits = value.has_credits;
+  } else if (typeof value.hasCredits === "boolean") {
+    parsed.hasCredits = value.hasCredits;
+  }
+  if (typeof value.unlimited === "boolean") {
+    parsed.unlimited = value.unlimited;
+  }
+  if (value.balance !== undefined && value.balance !== null) {
+    parsed.balance = value.balance;
+  }
+  return Object.keys(parsed).length > 0 ? parsed : undefined;
+}
+
+function readNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function formatQuotaReadFailureDiagnostic(error: unknown, parsedQuota: Record<string, unknown> | undefined): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!parsedQuota) {
+    return message;
+  }
+  const account = isObject(parsedQuota.account) ? parsedQuota.account : undefined;
+  return JSON.stringify({
+    error: message.replace(/body=\{[\s\S]*$/m, "body=<parsed>"),
+    parsedBody: true,
+    ...(typeof account?.planType === "string" ? { planType: account.planType } : {}),
+    ...(typeof account?.email === "string" ? { email: account.email } : {}),
+    ...(typeof account?.userId === "string" ? { userId: account.userId } : {}),
+    ...(typeof account?.accountId === "string" ? { accountId: account.accountId } : {}),
+  });
+}
+
 function formatQuotaSnapshot(value: unknown): string {
   if (!isObject(value)) {
     return "No Codex quota snapshot is available yet.";
   }
 
+  const account = isObject(value.account) ? value.account : undefined;
   const primary = isObject(value.primary) ? value.primary : undefined;
   const secondary = isObject(value.secondary) ? value.secondary : undefined;
   const credits = isObject(value.credits) ? value.credits : undefined;
+  const additional = Array.isArray(value.additional)
+    ? value.additional.filter(isObject)
+    : [];
   const lines = ["current quota:"];
 
+  if (account) {
+    if (typeof account.email === "string") {
+      lines.push(`- email: ${account.email}`);
+    }
+    if (typeof account.userId === "string") {
+      lines.push(`- user_id: ${account.userId}`);
+    }
+    if (typeof account.accountId === "string") {
+      lines.push(`- account_id: ${account.accountId}`);
+    }
+    if (typeof account.planType === "string") {
+      lines.push(`- plan_type: ${account.planType}`);
+    }
+  }
+  if (typeof value.allowed === "boolean" || typeof value.limitReached === "boolean") {
+    lines.push(`- allowed: ${String(value.allowed ?? "unknown")} / limit_reached: ${String(value.limitReached ?? "unknown")}`);
+  }
   if (primary) {
-    lines.push(`primary: ${primary.usedPercent ?? "?"}% used / ${primary.windowDurationMins ?? "?"} min window / resets ${formatQuotaReset(primary.resetsAt)}`);
+    lines.push(`- primary: ${primary.usedPercent ?? "?"}% used / ${primary.windowDurationMins ?? "?"} min window / resets(Beijing): ${formatQuotaReset(primary.resetsAt)}`);
   }
   if (secondary) {
-    lines.push(`secondary: ${secondary.usedPercent ?? "?"}% used / ${secondary.windowDurationMins ?? "?"} min window / resets ${formatQuotaReset(secondary.resetsAt)}`);
+    lines.push(`- secondary: ${secondary.usedPercent ?? "?"}% used / ${secondary.windowDurationMins ?? "?"} min window / resets(Beijing): ${formatQuotaReset(secondary.resetsAt)}`);
+  }
+  if (additional.length > 0) {
+    for (const item of additional) {
+      const itemPrimary = isObject(item.primary) ? item.primary : undefined;
+      const itemSecondary = isObject(item.secondary) ? item.secondary : undefined;
+      lines.push(`- additional ${item.name ?? "rate limit"}: primary ${itemPrimary?.usedPercent ?? "?"}% / ${itemPrimary?.windowDurationMins ?? "?"} min / resets(Beijing): ${formatQuotaReset(itemPrimary?.resetsAt)}; secondary ${itemSecondary?.usedPercent ?? "?"}% / ${itemSecondary?.windowDurationMins ?? "?"} min / resets(Beijing): ${formatQuotaReset(itemSecondary?.resetsAt)}`);
+    }
   }
   if (credits) {
-    lines.push(`credits: hasCredits=${String(credits.hasCredits)} unlimited=${String(credits.unlimited)} balance=${credits.balance ?? "n/a"}`);
+    lines.push(`- credits: hasCredits=${String(credits.hasCredits)} / unlimited=${String(credits.unlimited)} / balance=${credits.balance ?? "n/a"}`);
   }
 
   return lines.join("\n");
 }
 
 function formatQuotaReset(value: unknown): string {
-  return typeof value === "number" ? new Date(value * 1000).toISOString() : "unknown";
+  if (typeof value !== "number") {
+    return "unknown";
+  }
+  return formatBeijingTimestamp(value);
+}
+
+function formatBeijingTimestamp(epochSeconds: number): string {
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(epochSeconds * 1000));
 }
 
 function isReasoningEffort(value: unknown): value is ReasoningEffort {
   return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh";
+}
+
+function isSamePath(left: string, right: string): boolean {
+  return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
 }
 
 function shortenMiddle(value: string, maxLength: number): string {

@@ -11,6 +11,7 @@ export class AppServerCodexRunner implements CodexRunner {
       processManager: Pick<AppServerProcessManager, "ensureRunning">;
       client: Pick<AppServerClient, "initialize" | "startThread" | "resumeThread" | "startTurn" | "interruptTurn" | "steerTurn" | "setThreadName" | "listThreads" | "listModels" | "readRateLimits" | "close">;
       turnTimeoutMs?: number | undefined;
+      interruptTimeoutMs?: number | undefined;
     },
   ) {}
 
@@ -139,7 +140,11 @@ export class AppServerCodexRunner implements CodexRunner {
       const result = await raceWithAbort(turnPromise, input.signal, async () => {
         idleTimeout.stop();
         if (activeTurnId) {
-          await this.options.client.interruptTurn({ threadId: thread.id, turnId: activeTurnId }).catch(() => undefined);
+          await withTimeout(
+            this.options.client.interruptTurn({ threadId: thread.id, turnId: activeTurnId }),
+            this.options.interruptTimeoutMs ?? 5_000,
+            "App-server turn interrupt timed out",
+          ).catch(() => undefined);
         }
         this.resetClient();
       });

@@ -16,23 +16,25 @@ const DELIVERY_VERBS: Array<{ pattern: RegExp; evidence: string }> = [
   { pattern: /\bsend(?:\s+it|\s+them|\s+the\s+result|\s+back)?\b/i, evidence: "send it back" },
   { pattern: /\bdeliver\b/i, evidence: "deliver" },
   { pattern: /\breturn\b/i, evidence: "return" },
-  { pattern: /发给我/u, evidence: "发给我" },
-  { pattern: /发送给我/u, evidence: "发送给我" },
-  { pattern: /回传/u, evidence: "回传" },
-  { pattern: /回发/u, evidence: "回发" },
-  { pattern: /发送到微信/u, evidence: "发送到微信" },
-  { pattern: /发到微信/u, evidence: "发到微信" },
-  { pattern: /发回微信/u, evidence: "发回微信" },
-  { pattern: /发我/u, evidence: "发我" },
+  { pattern: /\u53d1\u7ed9\u6211/u, evidence: "\u53d1\u7ed9\u6211" },
+  { pattern: /\u53d1\u9001\u7ed9\u6211/u, evidence: "\u53d1\u9001\u7ed9\u6211" },
+  { pattern: /\u7ed9\u6211\u53d1/u, evidence: "\u7ed9\u6211\u53d1" },
+  { pattern: /\u7ed9\u6211\u53d1\u9001/u, evidence: "\u53d1\u9001" },
+  { pattern: /\u53d1\u9001/u, evidence: "\u53d1\u9001" },
+  { pattern: /\u53d1\u5230\u5fae\u4fe1/u, evidence: "\u53d1\u5230\u5fae\u4fe1" },
+  { pattern: /\u53d1\u9001\u5230\u5fae\u4fe1/u, evidence: "\u53d1\u9001\u5230\u5fae\u4fe1" },
+  { pattern: /\u53d1\u56de\u5fae\u4fe1/u, evidence: "\u53d1\u56de\u5fae\u4fe1" },
+  { pattern: /\u56de\u4f20/u, evidence: "\u56de\u4f20" },
+  { pattern: /\u56de\u53d1/u, evidence: "\u56de\u53d1" },
 ];
 
 const DELIVERY_RULES: DeliveryRule[] = [
   { kind: "pdf", patterns: [/\bpdf\b/i, /PDF/], evidence: "PDF" },
-  { kind: "doc", patterns: [/\bdocx?\b/i, /\bword\b/i, /Word/, /文档/u, /Word 文档/u], evidence: "Word" },
-  { kind: "text", patterns: [/\btxt\b/i, /\btext\b/i, /\bmarkdown\b/i, /\bmd\b/i, /文本/u, /文本文档/u], evidence: "text" },
-  { kind: "zip", patterns: [/\bzip\b/i, /压缩包/u], evidence: "zip" },
-  { kind: "image", patterns: [/\bimage\b/i, /\bimages\b/i, /\bpicture\b/i, /\bscreenshot\b/i, /图片/u, /截图/u], evidence: "image" },
-  { kind: "file", patterns: [/\bfile\b/i, /\bfiles\b/i, /文件/u, /附件/u], evidence: "文件" },
+  { kind: "doc", patterns: [/\bdocx?\b/i, /\bword\b/i, /Word/, /\u6587\u6863/u], evidence: "Word" },
+  { kind: "text", patterns: [/\btxt\b/i, /\btext\b/i, /\bmarkdown\b/i, /\bmd\b/i, /\u6587\u672c/u], evidence: "text" },
+  { kind: "zip", patterns: [/\bzip\b/i, /\u538b\u7f29\u5305/u], evidence: "zip" },
+  { kind: "image", patterns: [/\bimage\b/i, /\bimages\b/i, /\bpicture\b/i, /\bscreenshot\b/i, /\u56fe\u7247/u, /\u622a\u56fe/u], evidence: "image" },
+  { kind: "file", patterns: [/\bfile\b/i, /\bfiles\b/i, /\u6587\u4ef6/u, /\u9644\u4ef6/u], evidence: "\u6587\u4ef6" },
 ];
 
 export function parseDeliveryIntent(text: string): DeliveryIntent {
@@ -47,7 +49,7 @@ export function parseDeliveryIntent(text: string): DeliveryIntent {
   }
 
   const requestedKinds: DeliveryKind[] = [];
-  const evidenceText = matchedVerbs.map((rule) => rule.evidence);
+  const evidenceText = [...new Set(matchedVerbs.map((rule) => rule.evidence))];
 
   for (const rule of DELIVERY_RULES) {
     if (!rule.patterns.some((pattern) => pattern.test(trimmed))) {

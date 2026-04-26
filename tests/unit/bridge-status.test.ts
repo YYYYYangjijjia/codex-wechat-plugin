@@ -49,6 +49,15 @@ describe("bridge status", () => {
           }
           return [];
         },
+        listOutboundDeliveries(statuses) {
+          if (statuses?.[0] === "waiting_for_fresh_context") {
+            return [{ id: 3, conversationKey: "acct-1:user-a", accountId: "acct-1", peerUserId: "user-a", kind: "file" as const, payload: { filePath: "C:/tmp/report.pdf" }, status: "waiting_for_fresh_context" as const, createdAt: "", updatedAt: "" }];
+          }
+          if (statuses?.[0] === "failed") {
+            return [{ id: 4, conversationKey: "acct-1:user-a", accountId: "acct-1", peerUserId: "user-a", kind: "text" as const, payload: { text: "done" }, status: "failed" as const, createdAt: "", updatedAt: "" }];
+          }
+          return [];
+        },
         listDiagnostics() {
           return [
             {
@@ -62,7 +71,7 @@ describe("bridge status", () => {
         getRuntimeState(key: string) {
           if (key === "daemon_status") {
             return {
-              pid: 1234,
+              pid: 99999999,
               heartbeatAt: new Date().toISOString(),
               startedAt: "2026-04-16T00:00:00.000Z",
               activeAccounts: 1,
@@ -86,18 +95,24 @@ describe("bridge status", () => {
       pending: 1,
       failed: 1,
     });
+    expect(snapshot.outboundDeliveries).toEqual({
+      waitingForFreshContext: 1,
+      failed: 1,
+    });
     expect(snapshot.daemon).toEqual(expect.objectContaining({
       running: false,
       healthy: false,
-      pid: 1234,
+      pid: 99999999,
       activeAccounts: 1,
     }));
     expect(snapshot.latestReplyTiming).toEqual({
       runnerBackend: "app_server",
       totalMs: 1800,
     });
-    expect(formatBridgeStatus(snapshot)).toContain("daemon: stopped / stale (pid 1234)");
+    expect(formatBridgeStatus(snapshot)).toContain("daemon: stopped / stale (pid 99999999)");
     expect(formatBridgeStatus(snapshot)).toContain("app-server: connected");
+    expect(formatBridgeStatus(snapshot)).toContain("pending messages: 1 active pending / 1 historical failed");
+    expect(formatBridgeStatus(snapshot)).toContain("outbound deliveries: 1 waiting for fresh WeChat context / 1 failed");
   });
 
   test("prefers the live daemon lock over stale runtime daemon status", async () => {
@@ -118,6 +133,9 @@ describe("bridge status", () => {
           return [];
         },
         listPendingMessages() {
+          return [];
+        },
+        listOutboundDeliveries() {
           return [];
         },
         listDiagnostics() {

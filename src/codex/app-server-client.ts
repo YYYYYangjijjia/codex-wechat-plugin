@@ -83,6 +83,7 @@ type PendingTurn = {
 };
 
 export class AppServerClient {
+  private static readonly DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
   private readonly pendingRequests = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private readonly pendingTurns = new Map<string, PendingTurn>();
   private readonly bufferedNotifications = new Map<string, JsonRpcNotification[]>();
@@ -94,6 +95,7 @@ export class AppServerClient {
       transport: AppServerTransport;
       clientInfo: AppServerClientInfo;
       onNotification?: ((message: { method: string; params?: Record<string, unknown> }) => void) | undefined;
+      requestTimeoutMs?: number | undefined;
     },
   ) {
     this.options.transport.onMessage((message) => {
@@ -268,16 +270,36 @@ export class AppServerClient {
     await this.ensureOpen();
     const id = this.nextRequestId++;
     const request: JsonRpcRequest = { id, method, ...(params ? { params } : {}) };
+    const requestTimeoutMs = this.options.requestTimeoutMs ?? AppServerClient.DEFAULT_REQUEST_TIMEOUT_MS;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const clearRequestTimeout = (): void => {
+      if (timeout) {
+        clearTimeout(timeout);
+        timeout = undefined;
+      }
+    };
     const responsePromise = new Promise<T>((resolve, reject) => {
+      timeout = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        this.isOpened = false;
+        reject(new Error(`app-server request ${method} timed out after ${requestTimeoutMs}ms.`));
+      }, requestTimeoutMs);
       this.pendingRequests.set(id, {
-        resolve: (value) => resolve(value as T),
-        reject,
+        resolve: (value) => {
+          clearRequestTimeout();
+          resolve(value as T);
+        },
+        reject: (error) => {
+          clearRequestTimeout();
+          reject(error);
+        },
       });
     });
     try {
       this.options.transport.send(request);
     } catch (error) {
       this.pendingRequests.delete(id);
+      clearRequestTimeout();
       this.isOpened = false;
       throw error;
     }

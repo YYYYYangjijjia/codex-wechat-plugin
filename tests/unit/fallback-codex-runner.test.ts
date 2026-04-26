@@ -91,7 +91,7 @@ describe("runTurnWithFallback", () => {
       "exec:thread-exec-1:hello",
     ]);
     expect(progress).toEqual([
-      "⚠️ Codex backend switched from app_server to exec.\n原因: app-server unavailable\n本轮回复可能失去当前 session 的实时控制能力。",
+      "⚠️ Codex backend switched from app_server to exec.\n原因: app-server unavailable\n已自动改用 exec 进行一次兜底重试；本轮回复可能失去当前 session 的实时控制能力。",
     ]);
   });
 
@@ -117,6 +117,43 @@ describe("runTurnWithFallback", () => {
     expect(events).toEqual([
       "app_server:thread-app-1:hello",
     ]);
+  });
+
+  test("falls back to exec for a bound app-server turn that completes without a final agent message", async () => {
+    const events: string[] = [];
+    const progress: string[] = [];
+    const result = await runTurnWithFallback({
+      cwd: "C:/repo/codex-wechat-plugin",
+      prompt: "hello",
+      primaryBackend: "app_server",
+      fallbackBackend: "exec",
+      conversationThread: {
+        runnerBackend: "app_server",
+        runnerThreadId: "thread-app-1",
+      },
+      onProgress: async (chunk) => {
+        progress.push(chunk);
+      },
+      runners: {
+        app_server: makeRunner("app_server", events, async () => {
+          throw new Error("turn turn-1 did not include a final agent message.");
+        }),
+        exec: makeRunner("exec", events),
+      },
+    });
+
+    expect(result).toEqual({
+      runnerBackend: "exec",
+      threadId: "exec-thread-new",
+      finalMessage: "exec:hello",
+      cwd: "C:/repo/codex-wechat-plugin",
+    });
+    expect(events).toEqual([
+      "app_server:thread-app-1:hello",
+      "exec:new:hello",
+    ]);
+    expect(progress[0]).toContain("did not include a final agent message");
+    expect(progress[0]).toContain("兜底重试");
   });
 
   test("does not fall back on interruption or explicit fallback-request errors", async () => {

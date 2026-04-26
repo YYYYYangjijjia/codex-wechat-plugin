@@ -1,58 +1,39 @@
 ---
 name: "wechat-bridge-ops"
-description: "Use when operating, diagnosing, or manually intervening in the local Codex Desktop + WeChat / Weixin bridge through its MCP tools, especially for login, session mapping, pending messages, and failed deliveries."
+description: "Use when diagnosing or operating the local WeChat / Weixin bridge."
 ---
 
 # Ops
 
 ![WeChat Bridge Icon](./assets/icon.png)
 
-Use this skill when working with the local WeChat / Weixin bridge plugin in the current repository root or the installed plugin runtime.
+Operate the local WeChat / Weixin bridge runtime. This plugin is independent of OpenClaw.
 
-## Purpose
+## Runtime Model
 
-- Inspect bridge state without touching OpenClaw.
-- Confirm which WeChat / Weixin conversation maps to which Codex thread.
-- Recover from login expiry, failed replies, or ambiguous pending messages.
+- The daemon runs the autonomous private-message loop.
+- The plugin MCP exposes login, diagnostics, session mapping, pending review, and manual send tools.
+- MCP is not a manually long-running background service.
 
-## Runtime model
+## Safety Rules
 
-- The always-on runtime is the local daemon, not the plugin bundle.
-- The plugin bundle is the Codex-side control plane.
-- The MCP server exposes manual tools for login, diagnostics, inspection, and manual WeChat replies.
-- The daemon already performs the autonomous `private message -> Codex -> final WeChat / Weixin reply` loop.
+- v1 identity is `wechat_account_id + peer_user_id`.
+- Before manual send, verify the exact peer with `list_conversations` or `fetch_updates`.
+- Do not assume similar contact names are interchangeable.
+- Do not call `send_text_message`, `send_image_message`, or `send_file_message` without concrete `account_id` and `peer_user_id`.
+- If login expired, run `login`, scan the QR code, then poll `get_login_status`.
 
-## Safety rules
+## Normal Sequence
 
-- Treat `wechat_account_id + peer_user_id` as the only valid conversation identity in v1.
-- Before sending a manual reply, inspect `list_conversations` or `fetch_updates` and verify the exact peer.
-- Do not assume two contacts with similar names are interchangeable.
-- Do not use `send_text_message` unless you have a concrete `account_id` and `peer_user_id`.
-- If login has expired, run `login`, scan the QR code, then poll `get_login_status`.
+1. `get_account_state`
+2. `fetch_updates` when diagnosing pending inbound messages
+3. `list_conversations` when checking Codex thread mapping
+4. `get_diagnostics` for recent bridge/runtime errors
+5. Manual send or `retry_delivery` only after the route is verified
 
-## Recommended operating sequence
+## Limits
 
-1. Call `get_account_state` to confirm there is an active account.
-2. If there is no active account, call `login`, scan the QR code, then poll `get_login_status`.
-3. Call `fetch_updates` to inspect pending inbound messages if you need to diagnose or manually intervene.
-4. Call `list_conversations` if you need the Codex thread mapping.
-5. Only then call `send_text_message`, `send_image_message`, `send_file_message`, or `retry_delivery`.
-
-## Tool notes
-
-- `login`: starts a QR flow and returns `session_key` plus `qrcode_url`.
-- `get_login_status`: persists the login on confirmation.
-- `fetch_updates`: shows pending messages already captured by the daemon.
-- `set_typing_state`: manual override for typing status.
-- `get_diagnostics`: inspect recent errors such as `session_expired`, `poll_error`, `reply_failed`.
-- `list_conversations`: inspect the persisted WeChat-to-Codex mapping state.
-- `send_image_message`: send a local image file into a specific private chat.
-- `send_file_message`: send a local file attachment into a specific private chat.
-
-## Known limits
-
-- Private chats only in v1.
-- `typing + segmented partial replies + final remainder` only. No token-level streaming and no true generating/finish parity.
-- `/append` only works while the active task is running on the app-server backend.
-- `/model` and `/effort` are bridge-local runtime overrides; they do not rewrite global Codex config.
-- Outbound delivery still depends on a fresh valid reply context.
+- Private chats only.
+- `/append` only works while the active task is on the app-server backend.
+- `/model` and `/effort` are bridge-local overrides for new turns.
+- Outbound delivery can still require a fresh valid WeChat reply context.

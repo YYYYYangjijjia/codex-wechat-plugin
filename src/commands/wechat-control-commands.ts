@@ -3,7 +3,7 @@ import path from "node:path";
 import type { AppServerModelSummary, AppServerThreadSummary } from "../codex/app-server-client.js";
 import type { ReasoningEffort, RunnerBackend } from "../codex/codex-runner.js";
 import type { InstalledSkillsCatalog } from "./installed-skills.js";
-import type { AccountRecord, ConversationRecord, DiagnosticEvent, PendingMessageRecord } from "../state/sqlite-state-store.js";
+import type { AccountRecord, ConversationRecord, DiagnosticEvent, OutboundDeliveryRecord, OutboundDeliveryStatus, PendingMessageRecord } from "../state/sqlite-state-store.js";
 
 type ControlCommandStore = {
   clearConversationThread(conversationKey: string): void;
@@ -13,6 +13,7 @@ type ControlCommandStore = {
   listConversations(): ConversationRecord[];
   listAccounts(): AccountRecord[];
   listPendingMessages(statuses?: Array<PendingMessageRecord["status"]>): PendingMessageRecord[];
+  listOutboundDeliveries?(statuses?: OutboundDeliveryStatus[]): OutboundDeliveryRecord[];
   listDiagnostics(limit?: number): DiagnosticEvent[];
 };
 
@@ -141,7 +142,6 @@ export function handleWechatControlCommand(input: {
           "- /quota - show the current Codex rate-limit snapshot",
           "- /skills - show the currently installed local and plugin skills",
           "- /stop - interrupt the current Codex task for this chat",
-          "- /fallback continue - switch the current timed-out app_server task to exec fallback",
           "- /restart - restart the current bridge daemon for this chat",
           "- /append <text> - steer the current in-flight Codex task with more guidance",
           "- /pending - show the current backlog review summary for this chat",
@@ -629,6 +629,9 @@ export function handleWechatControlCommand(input: {
           currentSession: input.currentSession,
           accounts: input.stateStore.listAccounts(),
           pendingMessages: input.stateStore.listPendingMessages(["pending"]),
+          failedMessages: input.stateStore.listPendingMessages(["failed"]),
+          waitingOutboundDeliveries: input.stateStore.listOutboundDeliveries?.(["waiting_for_fresh_context"]) ?? [],
+          failedOutboundDeliveries: input.stateStore.listOutboundDeliveries?.(["failed"]) ?? [],
           diagnostics: input.stateStore.listDiagnostics(20),
         })),
       };
@@ -716,6 +719,9 @@ function formatStatus(input: {
   currentSession?: AppServerThreadSummary | undefined;
   accounts: AccountRecord[];
   pendingMessages: PendingMessageRecord[];
+  failedMessages: PendingMessageRecord[];
+  waitingOutboundDeliveries: OutboundDeliveryRecord[];
+  failedOutboundDeliveries: OutboundDeliveryRecord[];
   diagnostics: DiagnosticEvent[];
 }): string {
   const activeAccounts = input.accounts.filter((account) => account.loginState === "active");
@@ -725,7 +731,8 @@ function formatStatus(input: {
   return [
     `workspace: ${input.workspaceDir}`,
     `accounts: ${input.accounts.length} total / ${activeAccounts.length} active`,
-    `pending messages: ${input.pendingMessages.length}`,
+    `pending messages: ${input.pendingMessages.length} active pending / ${input.failedMessages.length} historical failed`,
+    `outbound deliveries: ${input.waitingOutboundDeliveries.length} waiting for fresh WeChat context / ${input.failedOutboundDeliveries.length} failed`,
     `current backend: ${input.conversation.runnerBackend ?? "none"}`,
     `current session: ${input.conversation.runnerThreadId ?? input.conversation.codexThreadId ?? "none"}`,
     `current session name: ${sessionName && sessionName.length > 0 ? sessionName : "unknown"}`,
@@ -974,13 +981,13 @@ function formatQuota(value: unknown): string {
   const lines = ["current quota:"];
 
   if (primary) {
-    lines.push(`primary: ${primary.usedPercent ?? "?"}% used / ${primary.windowDurationMins ?? "?"} min window / resets ${formatReset(primary.resetsAt)}`);
+    lines.push(`- primary: ${primary.usedPercent ?? "?"}% used / ${primary.windowDurationMins ?? "?"} min window / resets(Beijing): ${formatReset(primary.resetsAt)}`);
   }
   if (secondary) {
-    lines.push(`secondary: ${secondary.usedPercent ?? "?"}% used / ${secondary.windowDurationMins ?? "?"} min window / resets ${formatReset(secondary.resetsAt)}`);
+    lines.push(`- secondary: ${secondary.usedPercent ?? "?"}% used / ${secondary.windowDurationMins ?? "?"} min window / resets(Beijing): ${formatReset(secondary.resetsAt)}`);
   }
   if (credits) {
-    lines.push(`credits: hasCredits=${String(credits.hasCredits)} unlimited=${String(credits.unlimited)} balance=${credits.balance ?? "n/a"}`);
+    lines.push(`- credits: hasCredits=${String(credits.hasCredits)} / unlimited=${String(credits.unlimited)} / balance=${credits.balance ?? "n/a"}`);
   }
 
   return lines.join("\n");
@@ -1033,7 +1040,19 @@ function formatSessionRecords(records: SessionRecordEntry[]): string {
 }
 
 function formatReset(value: unknown): string {
-  return typeof value === "number" ? new Date(value * 1000).toISOString() : "unknown";
+  if (typeof value !== "number") {
+    return "unknown";
+  }
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(value * 1000));
 }
 
 function formatFinalSummaryStatus(runtimePreferences: RuntimePreferences): string {

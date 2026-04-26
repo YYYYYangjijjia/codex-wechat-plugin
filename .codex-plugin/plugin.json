@@ -1,7 +1,7 @@
 {
   "name": "codex-wechat-bridge",
   "version": "0.1.6",
-  "description": "Local Codex Desktop plugin bundle for bridging WeChat private chats into Codex workflows.",
+  "description": "Bridge WeChat / Weixin private chats into Codex Desktop.",
   "author": {
     "name": "Codex WeChat Bridge Contributors"
   },
@@ -11,8 +11,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "WeChat Bridge",
-    "shortDescription": "Operate a local WeChat bridge for Codex Desktop.",
-    "longDescription": "Adds local skills and MCP tools for QR login, diagnostics, conversation inspection, and manual WeChat replies without any OpenClaw runtime dependency.",
+    "shortDescription": "Bridge WeChat private chats into Codex.",
+    "longDescription": "Local daemon, MCP tools, and skills for WeChat / Weixin private-chat bridge operations.",
     "developerName": "Codex WeChat Bridge Contributors",
     "category": "Developer Tools",
     "capabilities": ["Read", "Write"],
@@ -20,8 +20,7 @@
     "privacyPolicyURL": "https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement",
     "termsOfServiceURL": "https://docs.github.com/site-policy/github-terms/github-terms-of-service",
     "defaultPrompt": [
-      "Use WeChat Bridge to inspect pending WeChat messages before replying.",
-      "Use WeChat Bridge to diagnose login status or failed WeChat deliveries."
+      "Use WeChat Bridge only for explicit bridge diagnostics, delivery, or WeChat routing tasks."
     ],
     "brandColor": "#0A6D46",
     "composerIcon": "./assets/desktop/codex_wechat_desktop_round.png",

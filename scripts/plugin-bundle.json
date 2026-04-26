@@ -1,0 +1,35 @@
+{
+  "copyDirectories": [
+    ".codex-plugin",
+    "assets",
+    "skills",
+    "dist"
+  ],
+  "copyFiles": [
+    ".mcp.json",
+    "package.json",
+    "scripts/wechat-bridge-tray.ps1"
+  ],
+  "cacheCopyDirectories": [
+    ".codex-plugin",
+    "assets",
+    "skills",
+    "dist",
+    "node_modules",
+    "scripts"
+  ],
+  "cacheCopyFiles": [
+    ".mcp.json",
+    "package.json"
+  ],
+  "excludeFiles": [
+    "assets/desktop/codex_wechat_desktop_round.svg",
+    "skills/task-finished-notifier/scripts/send_task_finished_notification.d.ts"
+  ],
+  "staleInstallDirectories": [
+    "artifacts"
+  ],
+  "staleCacheDirectories": [
+    "artifacts"
+  ]
+}

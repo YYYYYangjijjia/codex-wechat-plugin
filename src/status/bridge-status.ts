@@ -36,6 +36,10 @@ export type BridgeStatusSnapshot = {
     pending: number;
     failed: number;
   };
+  outboundDeliveries: {
+    waitingForFreshContext: number;
+    failed: number;
+  };
   daemon: {
     running: boolean;
     healthy: boolean;
@@ -66,7 +70,7 @@ export type BridgeStatusSnapshot = {
 
 export async function collectBridgeStatus(input: {
   config: BridgeConfig;
-  stateStore: Pick<StateStore, "listAccounts" | "listConversations" | "listPendingMessages" | "listDiagnostics" | "getRuntimeState">;
+  stateStore: Pick<StateStore, "listAccounts" | "listConversations" | "listPendingMessages" | "listDiagnostics" | "getRuntimeState"> & Partial<Pick<StateStore, "listOutboundDeliveries">>;
   appServerConnected?: boolean | undefined;
   probeAppServer?: (() => Promise<boolean>) | undefined;
   readDaemonLock?: ((workspaceDir: string) => DaemonLockRecord | undefined) | undefined;
@@ -77,6 +81,8 @@ export async function collectBridgeStatus(input: {
   const pendingAccounts = accounts.filter((account) => account.loginState === "pending").length;
   const pendingMessages = input.stateStore.listPendingMessages(["pending"]);
   const failedMessages = input.stateStore.listPendingMessages(["failed"]);
+  const waitingOutboundDeliveries = input.stateStore.listOutboundDeliveries?.(["waiting_for_fresh_context"]) ?? [];
+  const failedOutboundDeliveries = input.stateStore.listOutboundDeliveries?.(["failed"]) ?? [];
   const diagnostics = input.stateStore.listDiagnostics(10);
   const daemonState = parseDaemonRuntimeState(input.stateStore.getRuntimeState("daemon_status"));
   const daemonLock = input.readDaemonLock?.(input.config.workspaceDir) ?? readDaemonLock(input.config.workspaceDir);
@@ -104,6 +110,10 @@ export async function collectBridgeStatus(input: {
     pendingMessages: {
       pending: pendingMessages.length,
       failed: failedMessages.length,
+    },
+    outboundDeliveries: {
+      waitingForFreshContext: waitingOutboundDeliveries.length,
+      failed: failedOutboundDeliveries.length,
     },
     daemon: {
       running: daemonRunning,
@@ -133,7 +143,8 @@ export function formatBridgeStatus(snapshot: BridgeStatusSnapshot): string {
     `database: ${snapshot.databasePath}`,
     `accounts: ${snapshot.accounts.total} total / ${snapshot.accounts.active} active / ${snapshot.accounts.expired} expired / ${snapshot.accounts.pending} pending`,
     `conversations: ${snapshot.conversations.total}`,
-    `pending messages: ${snapshot.pendingMessages.pending} pending / ${snapshot.pendingMessages.failed} failed`,
+    `pending messages: ${snapshot.pendingMessages.pending} active pending / ${snapshot.pendingMessages.failed} historical failed`,
+    `outbound deliveries: ${snapshot.outboundDeliveries.waitingForFreshContext} waiting for fresh WeChat context / ${snapshot.outboundDeliveries.failed} failed`,
     `daemon: ${snapshot.daemon.running ? "running" : "stopped"} / ${snapshot.daemon.healthy ? "healthy" : "stale"}${snapshot.daemon.pid ? ` (pid ${snapshot.daemon.pid})` : ""}`,
     `codex backend: ${snapshot.codexBackend}`,
     `app-server: ${snapshot.codex.appServerConnected ? "connected" : "disconnected"} @ ${snapshot.codex.appServerUrl}`,

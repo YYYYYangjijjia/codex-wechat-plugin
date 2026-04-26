@@ -23,18 +23,25 @@ export type BridgeToolService = {
   getLoginStatus(sessionKey: string): Promise<Record<string, unknown>>;
   listConversations(): unknown[];
   peekPendingMessages(statuses?: PendingMessageRecord["status"][]): PendingMessageRecord[];
-  sendTextMessage(input: { accountId: string; peerUserId: string; text: string; contextToken?: string | undefined }): Promise<{ messageId: string; status?: "queued" | "sent" }>;
+  sendTextMessage(input: { accountId: string; peerUserId: string; text: string; contextToken?: string | undefined }): Promise<{ messageId: string; status?: "queued" | "sent"; queuedReason?: string | undefined }>;
   sendFileMessage(input: {
     accountId: string;
     peerUserId: string;
     filePath: string;
     contextToken?: string | undefined;
     captionText?: string | undefined;
-  }): Promise<{ messageId: string; kind: "image" | "file"; status?: "queued" | "sent" }>;
+  }): Promise<{ messageId: string; kind: "image" | "file"; status?: "queued" | "sent"; queuedReason?: string | undefined }>;
   setTypingState(input: { accountId: string; peerUserId: string; state: "start" | "stop"; typingTicket?: string | undefined }): Promise<{ status: string }>;
   retryDelivery(pendingMessageId: number): Promise<{ pendingMessageId: number; status: string }>;
   getDiagnostics(limit?: number): unknown[];
   getAccountState(): unknown[];
+  getRuntimeInfo?(): {
+    workspaceDir: string;
+    stateDir: string;
+    databasePath: string;
+    installedPluginRoot: string;
+    readingInstalledRuntime: boolean;
+  };
 };
 
 const pendingStatusSchema = z.enum(["pending", "sent", "failed"]);
@@ -118,7 +125,11 @@ export function createBridgeToolRegistry(service: BridgeToolService): BridgeTool
           text: parsed.text,
           contextToken: parsed.context_token,
         });
-        return toToolResult({ message_id: result.messageId, status: result.status ?? "sent" });
+        return toToolResult({
+          message_id: result.messageId,
+          status: result.status ?? "sent",
+          ...(result.queuedReason ? { queued_reason: result.queuedReason } : {}),
+        });
       },
     },
     send_image_message: {
@@ -145,7 +156,12 @@ export function createBridgeToolRegistry(service: BridgeToolService): BridgeTool
           contextToken: parsed.context_token,
           captionText: parsed.caption_text,
         });
-        return toToolResult({ message_id: result.messageId, status: result.status ?? "sent", kind: result.kind });
+        return toToolResult({
+          message_id: result.messageId,
+          status: result.status ?? "sent",
+          kind: result.kind,
+          ...(result.queuedReason ? { queued_reason: result.queuedReason } : {}),
+        });
       },
     },
     send_file_message: {
@@ -172,7 +188,12 @@ export function createBridgeToolRegistry(service: BridgeToolService): BridgeTool
           contextToken: parsed.context_token,
           captionText: parsed.caption_text,
         });
-        return toToolResult({ message_id: result.messageId, status: result.status ?? "sent", kind: result.kind });
+        return toToolResult({
+          message_id: result.messageId,
+          status: result.status ?? "sent",
+          kind: result.kind,
+          ...(result.queuedReason ? { queued_reason: result.queuedReason } : {}),
+        });
       },
     },
     set_typing_state: {
@@ -227,8 +248,39 @@ export function createBridgeToolRegistry(service: BridgeToolService): BridgeTool
       description: "List persisted WeChat account records and login state.",
       inputSchema: {},
       async execute() {
-        return toToolResult({ accounts: service.getAccountState() });
+        const accounts = redactAccountRecords(service.getAccountState());
+        const runtime = service.getRuntimeInfo?.();
+        return toToolResult({
+          accounts,
+          ...(runtime ? { runtime } : {}),
+          ...(accounts.length === 0 && runtime
+            ? {
+                warnings: [
+                  runtime.readingInstalledRuntime
+                    ? "No account records were found in the installed WeChat Bridge runtime database."
+                    : "No account records were found, and this MCP server is not reading the installed WeChat Bridge runtime database.",
+                ],
+              }
+            : {}),
+        });
       },
     },
   };
+}
+
+function redactAccountRecords(accounts: unknown[]): unknown[] {
+  return accounts.map((account) => {
+    if (!account || typeof account !== "object") {
+      return account;
+    }
+    const record = account as Record<string, unknown>;
+    if (!("token" in record)) {
+      return record;
+    }
+    const { token, ...rest } = record;
+    return {
+      ...rest,
+      tokenPresent: typeof token === "string" && token.length > 0,
+    };
+  });
 }

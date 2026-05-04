@@ -26,9 +26,7 @@
     "assets/desktop/codex_wechat_desktop_round.svg",
     "skills/task-finished-notifier/scripts/send_task_finished_notification.d.ts"
   ],
-  "staleInstallDirectories": [
-    "artifacts"
-  ],
+  "staleInstallDirectories": [],
   "staleCacheDirectories": [
     "artifacts"
   ]

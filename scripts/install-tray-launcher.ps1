@@ -19,6 +19,69 @@ function Resolve-CscPath {
   throw "Cannot find csc.exe from .NET Framework."
 }
 
+function Test-PathUnderRoot {
+  param(
+    [string]$Root,
+    [string]$Target
+  )
+
+  if (-not $Root -or -not $Target) {
+    return $false
+  }
+
+  $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+  $targetFull = [System.IO.Path]::GetFullPath($Target)
+  if ($targetFull.Equals($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $true
+  }
+
+  $rootPrefix = $rootFull + [System.IO.Path]::DirectorySeparatorChar
+  return $targetFull.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Remove-StaleDeveloperShortcut {
+  param(
+    [string]$ShortcutPath,
+    [string]$ExpectedShortcutPath,
+    [string]$RepoRoot,
+    [string]$ResolvedPluginRoot,
+    $WshShell
+  )
+
+  if (-not (Test-Path -LiteralPath $ShortcutPath)) {
+    return
+  }
+
+  if (
+    [System.IO.Path]::GetFullPath($ShortcutPath).Equals(
+      [System.IO.Path]::GetFullPath($ExpectedShortcutPath),
+      [System.StringComparison]::OrdinalIgnoreCase
+    )
+  ) {
+    return
+  }
+
+  if (
+    [System.IO.Path]::GetFullPath($RepoRoot).Equals(
+      [System.IO.Path]::GetFullPath($ResolvedPluginRoot),
+      [System.StringComparison]::OrdinalIgnoreCase
+    )
+  ) {
+    return
+  }
+
+  $shortcut = $WshShell.CreateShortcut($ShortcutPath)
+  $pointsAtRepo =
+    (Test-PathUnderRoot -Root $RepoRoot -Target $shortcut.TargetPath) -or
+    (Test-PathUnderRoot -Root $RepoRoot -Target $shortcut.WorkingDirectory)
+  if (-not $pointsAtRepo) {
+    return
+  }
+
+  Remove-Item -LiteralPath $ShortcutPath -Force
+  Write-Host "Removed stale developer shortcut: $ShortcutPath"
+}
+
 $sourcePath = (Resolve-Path (Join-Path $RepoRoot "scripts\\tray-launcher.cs")).Path
 $resolvedPluginRoot =
   if (Test-Path $PluginRoot) {
@@ -75,6 +138,13 @@ $shortcut.Save()
 $shortcut = $wsh.CreateShortcut($shortcutPath)
 $shortcut.IconLocation = "$desktopIconPath,0"
 $shortcut.Save()
+
+Remove-StaleDeveloperShortcut `
+  -ShortcutPath (Join-Path $desktopDir "WeChat Bridge DEV.lnk") `
+  -ExpectedShortcutPath $shortcutPath `
+  -RepoRoot $RepoRoot `
+  -ResolvedPluginRoot $resolvedPluginRoot `
+  -WshShell $wsh
 
 Write-Host "Tray launcher executable: $exePath"
 Write-Host "Desktop shortcut created: $shortcutPath"

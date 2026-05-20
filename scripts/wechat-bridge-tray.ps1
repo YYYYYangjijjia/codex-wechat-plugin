@@ -48,10 +48,24 @@ function Test-ProcessAliveById {
   }
 }
 
+function Test-DaemonProcessById {
+  param([int]$ProcessId)
+  try {
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+    if (-not $process -or -not $process.CommandLine) {
+      return $false
+    }
+    $commandLine = [string]$process.CommandLine
+    return ($commandLine -like "*daemon.js*" -or $commandLine -like "*daemon.ts*")
+  } catch {
+    return $false
+  }
+}
+
 function Test-DaemonRunning {
   $lock = Read-LockRecord -LockPath $daemonLockPath
   if ($lock -and $lock.pid) {
-    return (Test-ProcessAliveById -ProcessId ([int]$lock.pid))
+    return (Test-DaemonProcessById -ProcessId ([int]$lock.pid))
   }
   return $false
 }
@@ -61,7 +75,7 @@ function Remove-StaleDaemonLock {
   if (-not $lock -or -not $lock.pid) {
     return $false
   }
-  if (Test-ProcessAliveById -ProcessId ([int]$lock.pid)) {
+  if (Test-DaemonProcessById -ProcessId ([int]$lock.pid)) {
     return $false
   }
   Remove-Item -LiteralPath $daemonLockPath -Force -ErrorAction SilentlyContinue
@@ -71,9 +85,11 @@ function Remove-StaleDaemonLock {
 function Stop-DaemonProcess {
   $lock = Read-LockRecord -LockPath $daemonLockPath
   if ($lock -and $lock.pid) {
-    Stop-Process -Id ([int]$lock.pid) -Force -ErrorAction SilentlyContinue
+    if (Test-DaemonProcessById -ProcessId ([int]$lock.pid)) {
+      Stop-Process -Id ([int]$lock.pid) -Force -ErrorAction SilentlyContinue
+    }
     Start-Sleep -Milliseconds 500
-    if (-not (Test-ProcessAliveById -ProcessId ([int]$lock.pid))) {
+    if (-not (Test-DaemonProcessById -ProcessId ([int]$lock.pid))) {
       Remove-Item -LiteralPath $daemonLockPath -Force -ErrorAction SilentlyContinue
     }
   }

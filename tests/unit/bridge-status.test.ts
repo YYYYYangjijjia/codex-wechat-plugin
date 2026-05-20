@@ -102,14 +102,13 @@ describe("bridge status", () => {
     expect(snapshot.daemon).toEqual(expect.objectContaining({
       running: false,
       healthy: false,
-      pid: 99999999,
       activeAccounts: 1,
     }));
     expect(snapshot.latestReplyTiming).toEqual({
       runnerBackend: "app_server",
       totalMs: 1800,
     });
-    expect(formatBridgeStatus(snapshot)).toContain("daemon: stopped / stale (pid 99999999)");
+    expect(formatBridgeStatus(snapshot)).toContain("daemon: stopped / stale");
     expect(formatBridgeStatus(snapshot)).toContain("app-server: connected");
     expect(formatBridgeStatus(snapshot)).toContain("pending messages: 1 active pending / 1 historical failed");
     expect(formatBridgeStatus(snapshot)).toContain("outbound deliveries: 1 waiting for fresh WeChat context / 1 failed");
@@ -119,6 +118,9 @@ describe("bridge status", () => {
     const snapshot = await collectBridgeStatus({
       config: makeConfig(),
       appServerConnected: true,
+      isDaemonProcessAlive(pid) {
+        return pid === process.pid;
+      },
       readDaemonLock() {
         return {
           pid: process.pid,
@@ -162,6 +164,50 @@ describe("bridge status", () => {
       startedAt: "2026-04-25T07:08:40.271Z",
       activeAccounts: 1,
     }));
+  });
+
+  test("does not treat a reused stale daemon pid as a running daemon", async () => {
+    const snapshot = await collectBridgeStatus({
+      config: makeConfig(),
+      appServerConnected: false,
+      isDaemonProcessAlive(pid) {
+        return pid === 15776;
+      },
+      stateStore: {
+        listAccounts() {
+          return [];
+        },
+        listConversations() {
+          return [];
+        },
+        listPendingMessages() {
+          return [];
+        },
+        listOutboundDeliveries() {
+          return [];
+        },
+        listDiagnostics() {
+          return [];
+        },
+        getRuntimeState(key: string) {
+          if (key === "daemon_status") {
+            return {
+              pid: 15776,
+              heartbeatAt: "2026-05-11T08:53:58.775Z",
+              startedAt: "2026-05-11T08:53:58.775Z",
+              activeAccounts: 1,
+            };
+          }
+          return undefined;
+        },
+      },
+    });
+
+    expect(snapshot.daemon).toEqual(expect.objectContaining({
+      running: false,
+      healthy: false,
+    }));
+    expect(formatBridgeStatus(snapshot)).toContain("daemon: stopped / stale");
   });
 });
 

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import type { BridgeConfig } from "../config/app-config.js";
 import type { StateStore } from "../state/sqlite-state-store.js";
 
@@ -74,6 +75,7 @@ export async function collectBridgeStatus(input: {
   appServerConnected?: boolean | undefined;
   probeAppServer?: (() => Promise<boolean>) | undefined;
   readDaemonLock?: ((workspaceDir: string) => DaemonLockRecord | undefined) | undefined;
+  isDaemonProcessAlive?: ((pid: number) => boolean) | undefined;
 }): Promise<BridgeStatusSnapshot> {
   const accounts = input.stateStore.listAccounts();
   const active = accounts.filter((account) => account.loginState === "active").length;
@@ -86,10 +88,15 @@ export async function collectBridgeStatus(input: {
   const diagnostics = input.stateStore.listDiagnostics(10);
   const daemonState = parseDaemonRuntimeState(input.stateStore.getRuntimeState("daemon_status"));
   const daemonLock = input.readDaemonLock?.(input.config.workspaceDir) ?? readDaemonLock(input.config.workspaceDir);
-  const liveDaemon = resolveLiveDaemon(daemonLock, daemonState);
-  const daemonRunning = typeof liveDaemon?.pid === "number" && isProcessAlive(liveDaemon.pid);
   const heartbeatAt = daemonState?.heartbeatAt ? Date.parse(daemonState.heartbeatAt) : Number.NaN;
   const staleThresholdMs = Math.max(30_000, input.config.longPollTimeoutMs * 2 + 10_000);
+  const heartbeatFresh = Number.isFinite(heartbeatAt) && (Date.now() - heartbeatAt) <= staleThresholdMs;
+  const liveDaemon = resolveLiveDaemon(daemonLock, daemonState, {
+    heartbeatFresh,
+    isDaemonProcessAlive: input.isDaemonProcessAlive ?? isBridgeDaemonProcessAlive,
+  });
+  const daemonRunning = typeof liveDaemon?.pid === "number"
+    && (input.isDaemonProcessAlive ?? isBridgeDaemonProcessAlive)(liveDaemon.pid);
   const appServerConnected = input.appServerConnected ?? await input.probeAppServer?.() ?? false;
   const latestReplyTiming = parseLatestReplyTiming(diagnostics);
 
@@ -117,7 +124,7 @@ export async function collectBridgeStatus(input: {
     },
     daemon: {
       running: daemonRunning,
-      healthy: daemonRunning && Number.isFinite(heartbeatAt) && (Date.now() - heartbeatAt) <= staleThresholdMs,
+      healthy: daemonRunning && heartbeatFresh,
       ...(typeof liveDaemon?.pid === "number" ? { pid: liveDaemon.pid } : {}),
       ...(liveDaemon?.startedAt ? { startedAt: liveDaemon.startedAt } : {}),
       ...(daemonState?.heartbeatAt ? { heartbeatAt: daemonState.heartbeatAt } : {}),
@@ -174,14 +181,22 @@ function parseDaemonRuntimeState(value: unknown): DaemonRuntimeState | undefined
 function resolveLiveDaemon(
   daemonLock: DaemonLockRecord | undefined,
   daemonState: DaemonRuntimeState | undefined,
+  options: {
+    heartbeatFresh: boolean;
+    isDaemonProcessAlive: (pid: number) => boolean;
+  },
 ): { pid?: number | undefined; startedAt?: string | undefined } | undefined {
-  if (typeof daemonLock?.pid === "number" && isProcessAlive(daemonLock.pid)) {
+  if (typeof daemonLock?.pid === "number" && options.isDaemonProcessAlive(daemonLock.pid)) {
     return {
       pid: daemonLock.pid,
       startedAt: daemonLock.acquiredAt ?? daemonState?.startedAt,
     };
   }
-  if (typeof daemonState?.pid === "number") {
+  if (
+    typeof daemonState?.pid === "number"
+    && options.heartbeatFresh
+    && options.isDaemonProcessAlive(daemonState.pid)
+  ) {
     return {
       pid: daemonState.pid,
       startedAt: daemonState.startedAt,
@@ -243,6 +258,38 @@ function shorten(value: string, maxLength: number): string {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isBridgeDaemonProcessAlive(pid: number): boolean {
+  if (!isProcessAlive(pid)) {
+    return false;
+  }
+  if (process.platform !== "win32") {
+    return true;
+  }
+  const commandLine = readWindowsProcessCommandLine(pid);
+  if (!commandLine) {
+    return false;
+  }
+  return /daemon\.(?:js|ts)\b/i.test(commandLine);
+}
+
+function readWindowsProcessCommandLine(pid: number): string | undefined {
+  try {
+    const script = [
+      "$p = Get-CimInstance Win32_Process -Filter \"ProcessId = " + pid + "\"",
+      "if ($p -and $p.CommandLine) { [Console]::Write($p.CommandLine) }",
+    ].join("; ");
+    const output = execFileSync("powershell.exe", ["-NoProfile", "-Command", script], {
+      encoding: "utf8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2_000,
+    });
+    return output.trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isProcessAlive(pid: number): boolean {

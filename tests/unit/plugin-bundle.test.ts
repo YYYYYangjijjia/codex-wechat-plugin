@@ -16,6 +16,7 @@ describe("plugin bundle manifest", () => {
     const bundle = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
       excludeFiles?: string[];
       staleInstallDirectories?: string[];
+      staleCacheDirectories?: string[];
     };
     const pluginManifest = JSON.parse(fs.readFileSync(pluginManifestPath, "utf8")) as {
       interface?: {
@@ -25,8 +26,9 @@ describe("plugin bundle manifest", () => {
     };
 
     expect(bundle.excludeFiles).toContain("assets/desktop/codex_wechat_desktop_round.svg");
-    expect(bundle.staleInstallDirectories).toContain("artifacts");
+    expect(bundle.staleInstallDirectories).not.toContain("artifacts");
     expect(bundle.staleInstallDirectories).not.toContain("state");
+    expect(bundle.staleCacheDirectories).toContain("artifacts");
     expect(pluginManifest.interface?.composerIcon).not.toMatch(/\.svg$/i);
     expect(pluginManifest.interface?.logo).not.toMatch(/\.svg$/i);
   });

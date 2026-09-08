@@ -1,9 +1,8 @@
-import { spawn } from "node:child_process";
-
 import { loadBridgeConfig } from "../config/app-config.js";
 import { resolveRuntimeRoot } from "../config/runtime-root.js";
 import { BridgeService } from "../daemon/bridge-service.js";
 import { createStateStore } from "../state/sqlite-state-store.js";
+import { openUrl } from "./open-url.js";
 
 async function main(): Promise<void> {
   const accountId = readFlagValue("--account");
@@ -51,19 +50,6 @@ function readFlagValue(flag: string): string | undefined {
     return undefined;
   }
   return process.argv[index + 1];
-}
-
-function openUrl(url: string): void {
-  if (process.platform !== "win32") {
-    return;
-  }
-  const comspec = process.env.ComSpec ?? "cmd.exe";
-  const child = spawn(comspec, ["/d", "/c", "start", "", url], {
-    windowsHide: true,
-    detached: true,
-    stdio: "ignore",
-  });
-  child.unref();
 }
 
 async function sleep(ms: number): Promise<void> {

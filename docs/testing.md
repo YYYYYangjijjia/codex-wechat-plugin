@@ -11,6 +11,7 @@ npm run build
 ## What the Automated Suite Covers
 
 - QR login state parsing and timeout handling
+- Windows login URL argument preservation through a real PowerShell subprocess (Windows-only tests; browser activation is replaced with an argument capture)
 - persistent cursor and context-token storage
 - conversation mapping and isolation
 - app-server runner behavior and fallback behavior
@@ -24,6 +25,7 @@ npm run build
 ### Core runtime
 1. Start the tray or daemon.
 2. Run `npm run login` and complete QR login.
+   On Windows, confirm that the automatically opened browser URL retains the full query string, including `bot_type=3`.
 3. Send a private WeChat message.
 4. Confirm a reply arrives.
 5. Restart the daemon and confirm recovery.

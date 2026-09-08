@@ -1,6 +1,6 @@
 {
   "name": "codex-wechat-bridge",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Bridge WeChat / Weixin private chats into Codex Desktop.",
   "author": {
     "name": "Codex WeChat Bridge Contributors"

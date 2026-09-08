@@ -15,6 +15,8 @@
 
 这是一个 **Windows-first** 的本地桥接项目，用于把 **微信（WeChat / Weixin）私聊**接入 **Codex Desktop**。运行形态由本地 daemon、本地 MCP server、Codex plugin bundle 组成。
 
+[v0.1.7](./docs/releases/v0.1.7.md) 修复了 Windows 自动打开二维码登录链接时丢失 `bot_type=3` 参数、导致手机扫码可能显示“网络错误”的问题。
+
 这个仓库是以下内容的源码主仓：
 - WeChat / Weixin bridge daemon
 - 本地 MCP server

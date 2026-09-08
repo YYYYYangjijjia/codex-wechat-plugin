@@ -15,6 +15,8 @@
 
 Windows-first local bridge that connects WeChat / Weixin private chats to Codex Desktop through a local daemon, a local MCP server, and a Codex plugin bundle.
 
+[v0.1.7](./docs/releases/v0.1.7.md) fixes Windows QR login links losing `bot_type=3` when the browser opens automatically, which could cause a phone-side network error.
+
 This repository is the source of truth for:
 - the WeChat / Weixin bridge daemon
 - the local MCP server
